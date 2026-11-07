@@ -1,46 +1,37 @@
-import asyncio
 import json
 import os
-import time
 
 from uagents import Agent, Context
 
+from agent_core import clarification_prompt, turn
 from events import log_event
-from llm import SYSTEMS, call_model
-from messages import Feedback, Submission, TaskAssigned
+from messages import Clarification, Feedback, TaskAssigned
 
 
-def make_engineer() -> Agent:
+def _agent(name: str) -> Agent:
     kwargs = {}
-    if os.getenv("ENGINEER_PORT"):
-        kwargs["port"] = int(os.environ["ENGINEER_PORT"])
-    agent = Agent(
-        name="engineer",
-        seed=os.getenv("ENGINEER_SEED"),
+    if os.getenv(f"{name.upper()}_PORT"):
+        kwargs["port"] = int(os.environ[f"{name.upper()}_PORT"])
+    return Agent(
+        name=name,
+        seed=os.getenv(f"{name.upper()}_SEED"),
         mailbox=os.getenv("USE_MAILBOX") == "1",
         report_events=os.getenv("REPORT_EVENTS", "1") == "1",
         **kwargs,
     )
-    orch = os.environ["ORCHESTRATOR_ADDRESS"]
-    tasks: dict[str, dict] = {}  # task_id -> {"contract", "files"}  (engineer's own memory)
 
-    async def work(ctx: Context, task_id: str, rnd: int, user: str):
-        t0 = time.monotonic()
-        try:
-            out = await asyncio.to_thread(call_model, "engineer", SYSTEMS["engineer"], user, rnd)
-        except Exception as e:
-            log_event("model_error", agent="engineer", task_id=task_id, round=rnd, error=f"{type(e).__name__}: {str(e)[:300]}")
-            raise
-        log_event(
-            "model_call", agent="engineer", task_id=task_id, round=rnd,
-            seconds=round(time.monotonic() - t0, 1), files=list(out["files"]),
-        )
-        tasks[task_id]["files"].update(out["files"])
-        await ctx.send(
-            orch,
-            Submission(task_id=task_id, role="engineer", round=rnd, files=out["files"], notes=out["notes"], assumptions=out["assumptions"]),
-        )
-        log_event("agent_sent", agent="engineer", type="Submission", task_id=task_id, round=rnd)
+
+def make_engineer() -> Agent:
+    agent = _agent("engineer")
+    orch = os.environ["ORCHESTRATOR_ADDRESS"]
+    tasks: dict[str, dict] = {}  # task_id -> the engineer's own memory (contract, ticket, files, prompt)
+
+    def ok(ctx, sender, kind, task_id=None):
+        if sender != orch or (task_id is not None and task_id not in tasks):
+            ctx.logger.warning(f"ignored {kind} from {sender[:14]}...")
+            log_event("agent_ignored", agent="engineer", type=kind, sender=sender[:14])
+            return False
+        return True
 
     @agent.on_message(TaskAssigned)
     async def on_task(ctx: Context, sender: str, msg: TaskAssigned):
@@ -49,24 +40,37 @@ def make_engineer() -> Agent:
             log_event("agent_ignored", agent="engineer", type="TaskAssigned", sender=sender[:14], role=msg.role)
             return
         log_event("agent_received", agent="engineer", type="TaskAssigned", task_id=msg.task_id, round=msg.round)
-        tasks[msg.task_id] = {"contract": msg.contract, "files": {}}
-        ctx.logger.info(f"[{msg.task_id}] round {msg.round}: writing implementation")
-        await work(ctx, msg.task_id, msg.round, f"Contract:\n{msg.contract}")
+        mem = tasks[msg.task_id] = {"contract": msg.contract, "ticket": msg.ticket, "files": {}}
+        ctx.logger.info(f"[{msg.task_id}] round {msg.round}: reading the requirement")
+        out = await turn(ctx, "engineer", orch, msg.task_id, msg.round, f"Requirement:\n{msg.contract}", msg.ticket, mem, True)
+        if out:
+            mem["files"].update(out["files"])
+
+    @agent.on_message(Clarification)
+    async def on_clarification(ctx: Context, sender: str, msg: Clarification):
+        if not ok(ctx, sender, "Clarification", msg.task_id):
+            return
+        log_event("agent_received", agent="engineer", type="Clarification", task_id=msg.task_id, round=msg.round)
+        mem = tasks[msg.task_id]
+        prompt = clarification_prompt(mem["prompt"], msg.answers)
+        out = await turn(ctx, "engineer", orch, msg.task_id, msg.round, prompt, mem["ticket"], mem, False)
+        if out:
+            mem["files"].update(out["files"])
 
     @agent.on_message(Feedback)
     async def on_feedback(ctx: Context, sender: str, msg: Feedback):
-        if sender != orch or msg.task_id not in tasks:
-            ctx.logger.warning(f"ignored Feedback from {sender[:14]}...")
-            log_event("agent_ignored", agent="engineer", type="Feedback", sender=sender[:14])
+        if not ok(ctx, sender, "Feedback", msg.task_id):
             return
         log_event("agent_received", agent="engineer", type="Feedback", task_id=msg.task_id, round=msg.round)
-        t = tasks[msg.task_id]
+        mem = tasks[msg.task_id]
         ctx.logger.info(f"[{msg.task_id}] round {msg.round}: fixing after feedback")
-        user = (
-            f"Contract:\n{t['contract']}\n\nYour current files:\n{json.dumps(t['files'], indent=2)}\n\n"
+        prompt = (
+            f"Requirement:\n{mem['contract']}\n\nYour current files:\n{json.dumps(mem['files'], indent=2)}\n\n"
             f"Test failures (names and assertion lines only):\n{msg.report}\n\nFix the implementation."
         )
-        await work(ctx, msg.task_id, msg.round, user)
+        out = await turn(ctx, "engineer", orch, msg.task_id, msg.round, prompt, mem["ticket"], mem, False)
+        if out:
+            mem["files"].update(out["files"])
 
     return agent
 

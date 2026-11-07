@@ -1,6 +1,8 @@
 """Send one ticket to the Orchestrator as a ChatMessage and print the replies.
 
-Usage: python dev_client.py "Add a function add(a, b) in src/calc.py ..."
+Usage: python dev_client.py issues
+       python dev_client.py exp1
+       python dev_client.py "Add a function add(a, b) in src/calc.py ..."
 """
 
 import asyncio
@@ -40,7 +42,8 @@ chat = Protocol(spec=chat_protocol_spec)
 async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
     await ctx.send(sender, ChatAcknowledgement(acknowledged_msg_id=msg.msg_id))
     print(f"[orchestrator] {msg.text()}", flush=True)
-    if any(isinstance(c, EndSessionContent) for c in msg.content):
+    is_list = TICKET.strip().lower() in ("issues", "list", "list issues", "help", "?")
+    if is_list or any(isinstance(c, EndSessionContent) for c in msg.content):
         print("-- session ended --", flush=True)
         os._exit(0)
 

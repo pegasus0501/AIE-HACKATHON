@@ -70,6 +70,19 @@
   details.file > summary { padding:6px 10px; cursor:pointer; background:var(--grid); display:flex; gap:10px; align-items:center; }
   .badge { font-size:11px; padding:0 6px; border-radius:4px; border:1px solid currentColor; } .badge.added { color:var(--ok); } .badge.modified { color:var(--warn); } .badge.unchanged { color:var(--muted); }
   .plus { color:var(--ok); } .minus { color:var(--bad); }
+  .task .name { font-weight:600; white-space:normal; line-height:1.3; }
+  .task .top { align-items:center; }
+  .hl { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }
+  .hl button { font:inherit; font-size:12px; padding:3px 10px; border-radius:999px; border:1px solid currentColor; background:transparent; cursor:pointer; }
+  .hl button.warn { color:var(--warn); } .hl button.bad { color:var(--bad); } .hl button.ok { color:var(--ok); } .hl button.info { color:var(--muted); }
+  .hl button:hover { background:var(--grid); }
+  .qa { border:1px solid var(--line); border-radius:6px; padding:8px 10px; margin:6px 0; }
+  .qa .q { font-weight:600; } .qa .a { margin-top:4px; } .qa .a.gap { color:var(--warn); }
+  .qa .pt { color:var(--muted); font-size:12px; margin-bottom:2px; }
+  .fail { border-left:3px solid var(--bad); padding:4px 10px; margin:6px 0; background:var(--delbg); border-radius:0 6px 6px 0; }
+  .fail .n { font-weight:600; word-break:break-word; } .fail .m { color:var(--muted); font-size:12px; word-break:break-word; }
+  table.sc { border-collapse:collapse; margin:6px 0; } table.sc td, table.sc th { padding:3px 12px 3px 0; text-align:left; font-weight:400; }
+  table.sc th { color:var(--muted); font-size:12px; }
   .empty { padding:40px; color:var(--muted); text-align:center; }
   .tools { display:flex; gap:16px; align-items:center; margin-bottom:8px; color:var(--muted); font-size:12px; }
   .diagram { overflow:auto; }
@@ -88,6 +101,7 @@
   <aside id="tasks"></aside>
   <section>
     <div id="summary"></div>
+    <div id="highlights" class="hl"></div>
     <div class="tabs" role="tablist">
       <button class="tab on" id="tab-avatars" role="tab">Avatars</button>
       <button class="tab" id="tab-lineage" role="tab">Lineage</button>
@@ -148,6 +162,10 @@ function taskIds() {
   return DATA.events.filter(e => e.kind === 'task_created').map(e => e.task_id).reverse();
 }
 function createdOf(id) { return DATA.events.find(e => e.kind === 'task_created' && e.task_id === id); }
+function titleOf(c) { return c.title || short(c.ticket, 60); }
+const cap = w => w.charAt(0).toUpperCase() + w.slice(1);
+function firstFail(report) { const l = (report || '').split('\n').find(x => x.startsWith('FAILED')) || (report || '').split('\n')[0] || ''; return l.replace(/^FAILED\s+/, ''); }
+function failCount(report) { return (report || '').split('\n').filter(x => x.startsWith('FAILED')).length; }
 
 /* ---------- rows: one entry per event worth showing ---------- */
 function rowsFor(id) {
@@ -158,30 +176,47 @@ function rowsFor(id) {
   const showAll = showAllProgress();
   const rows = [];
   if (hasUser) {
-    const chat = evs.filter(e => e.kind === 'chat_in' && e.text === created.ticket && Date.parse(e.ts) <= Date.parse(created.ts)).pop();
-    if (chat) rows.push({ ts: chat.ts, from: 'user', to: 'orchestrator', label: 'ticket (chat)', raw: chat });
+    const chat = evs.filter(e => e.kind === 'chat_in' && Date.parse(e.ts) <= Date.parse(created.ts)).pop();
+    if (chat) rows.push({ ts: chat.ts, from: 'user', to: 'orchestrator', label: 'issue (chat)', raw: chat });
   }
   rows.push({ ts: created.ts, lane: 'orchestrator', label: 'task created', raw: created });
+  const open = {};  // agent -> its currently open run of SQL queries
   for (const e of evs.filter(x => x.task_id === id && x !== created)) {
     const lane = e.agent || null;
+    if (lane && e.kind !== 'agent_query') open[lane] = null;
     switch (e.kind) {
       case 'send': {
         const to = e.role || (e.type === 'Feedback' ? 'engineer' : laneOf(e.to));
-        rows.push({ ts: e.ts, from: 'orchestrator', to, label: e.type + (e.round ? ' r' + e.round : ''), raw: e });
+        rows.push({ ts: e.ts, from: 'orchestrator', to, label: e.type + (e.round ? ' r' + e.round : ''), tone: e.type === 'Clarification' ? 'ok' : e.type === 'Feedback' ? 'bad' : '', raw: e });
+        break; }
+      case 'pushback': {
+        const n = (e.items || []).length;
+        rows.push({ ts: e.ts, from: e.role, to: 'orchestrator', tone: 'warn', label: 'Pushback: ' + n + ' question' + (n === 1 ? '' : 's'), raw: e });
         break; }
       case 'agent_received': rows.push({ ts: e.ts, lane, label: 'received ' + e.type + ' r' + e.round, raw: e }); break;
-      case 'model_call': rows.push({ ts: e.ts, lane, label: 'model call ' + e.seconds + 's, ' + e.files.length + ' file(s)', raw: e }); break;
+      case 'agent_query': {
+        let g = open[e.agent];
+        if (!g) { g = { ts: e.ts, lane: e.agent, label: '', raw: { kind: 'agent_query_group', agent: e.agent, round: e.round, queries: [], ts: e.ts } }; open[e.agent] = g; rows.push(g); }
+        g.raw.queries.push(e);
+        const n = g.raw.queries.length;
+        g.label = 'ran ' + n + ' SQL quer' + (n === 1 ? 'y' : 'ies');
+        break; }
+      case 'model_call': rows.push({ ts: e.ts, lane, label: 'model call ' + e.seconds + 's' + (e.files.length ? ', ' + e.files.length + ' file(s)' : ''), raw: e }); break;
       case 'model_error': rows.push({ ts: e.ts, lane, tone: 'bad', label: 'model error', raw: e }); break;
       case 'agent_sent': break;
       case 'submission_in':
         rows.push({ ts: e.ts, from: e.role, to: 'orchestrator', label: 'Submission r' + e.round + ' (' + Object.keys(e.files || {}).length + ' files)', raw: e });
         break;
       case 'path_rejected': rows.push({ ts: e.ts, lane: 'orchestrator', tone: 'warn', label: 'rejected ' + short(e.path, 24), raw: e }); break;
-      case 'pytest': rows.push({ ts: e.ts, lane: 'orchestrator', tone: e.exit_code === 0 ? 'ok' : 'bad', label: 'pytest r' + e.round + ': ' + (e.exit_code === 0 ? 'passed' : 'failed (exit ' + e.exit_code + ')'), raw: e }); break;
+      case 'pytest': rows.push({ ts: e.ts, lane: 'orchestrator', tone: e.exit_code === 0 ? 'ok' : 'bad', label: 'tests r' + e.round + ': ' + (e.exit_code === 0 ? 'passed' : 'failed'), raw: e }); break;
       case 'decision': rows.push({ ts: e.ts, lane: 'orchestrator', tone: e.outcome === 'pass' ? 'ok' : e.outcome === 'retry' ? 'warn' : 'bad', label: 'decision: ' + e.outcome, raw: e }); break;
+      case 'score': {
+        const r = e.report || {};
+        rows.push({ ts: e.ts, lane: 'orchestrator', tone: r.catch_rate >= 1 && r.engineer_passes_hidden_tests ? 'ok' : 'warn', label: 'score: caught ' + r.caught + '/' + r.total, raw: e });
+        break; }
       case 'progress': {
         const t = e.text || '';
-        const key = /^(PASS|FAIL)/.test(t) || /^Working on it/.test(t);
+        const key = /^(PASS|FAIL)/.test(t) || /^Working on/.test(t);
         if (hasUser && (key || showAll)) rows.push({ ts: e.ts, from: 'orchestrator', to: 'user', label: short(t, 38), tone: /^PASS/.test(t) ? 'ok' : /^FAIL/.test(t) ? 'bad' : '', raw: e });
         break; }
     }
@@ -194,7 +229,7 @@ function outcomeOf(id) {
   const d = DATA.events.filter(e => e.kind === 'decision' && e.task_id === id);
   const last = d[d.length - 1];
   if (!last) return 'running';
-  return last.outcome === 'pass' ? 'pass' : last.outcome === 'fail_final' ? 'fail' : 'running';
+  return last.outcome === 'pass' ? 'pass' : (last.outcome === 'fail_final' || last.outcome === 'timeout') ? 'fail' : 'running';
 }
 const chipClass = o => o === 'pass' ? 'pass' : o === 'fail' ? 'fail' : 'run';
 
@@ -205,80 +240,154 @@ function stateAt(rows, k, hasUser) {
   for (let i = 0; i <= k && i < rows.length; i++) {
     const e = rows[i].raw || {};
     switch (e.kind) {
-      case 'chat_in': S.user = { t: 'Sent the ticket' }; S.orchestrator = { t: 'Received the ticket', busy: true }; break;
-      case 'task_created': S.orchestrator = { t: 'Dispatching the contract to both agents', busy: true }; break;
+      case 'chat_in': S.user = { t: 'Sent the issue' }; S.orchestrator = { t: 'Received the issue', busy: true }; break;
+      case 'task_created': S.orchestrator = { t: 'Giving both agents the requirement', busy: true }; break;
       case 'send':
         if (e.type === 'Feedback') {
           round = e.round; got = new Set();
           S.orchestrator = { t: 'Sent feedback, waiting for the Engineer', busy: true };
-          S.engineer = { t: 'Feedback on its way', busy: true };
+          S.engineer = { t: 'Feedback on its way', busy: true, bubble: { text: firstFail(e.report), tone: 'bad', mark: '!' } };
+        } else if (e.type === 'Clarification') {
+          const a = (e.answers || [])[0];
+          S.orchestrator = { t: 'Answered the ' + e.role + ' from the contract', busy: true, bubble: a ? { text: a.answer, tone: /^Not specified/.test(a.answer) ? 'warn' : 'ok', mark: 'A' } : null };
+          S[e.role] = { t: 'Answers on their way', busy: true };
         } else {
           S[e.role] = { t: 'Task on its way', busy: true };
           S.orchestrator = { t: 'Waiting for Engineer and Tester', busy: true };
         }
         break;
       case 'agent_received':
-        S[e.agent] = { t: e.agent === 'tester' ? 'Writing tests from the contract' : e.type === 'Feedback' ? 'Reading feedback, fixing the code' : 'Writing the implementation', busy: true };
+        S[e.agent] = { t: e.type === 'Clarification' ? 'Reading the answers, now writing' : e.agent === 'tester' ? 'Reading the requirement' : e.type === 'Feedback' ? 'Reading feedback, fixing the code' : 'Reading the requirement', busy: true };
         break;
+      case 'agent_query_group': {
+        const q = e.queries[e.queries.length - 1];
+        S[e.agent] = { t: 'Inspecting the real data (' + e.queries.length + ' SQL quer' + (e.queries.length === 1 ? 'y' : 'ies') + ')', busy: true, bubble: { text: q.sql, tone: 'info', mark: 'SQL' } };
+        break; }
+      case 'pushback': {
+        const qs = (e.items || []).map(x => x.question);
+        S[e.role] = { t: 'Pushed back: ' + qs.length + ' question' + (qs.length === 1 ? '' : 's') + ', waiting', tone: 'warn', bubble: { text: qs[0] || '', tone: 'warn', mark: '?' } };
+        S.orchestrator = { t: 'Answering the ' + e.role + ' from the contract', busy: true };
+        break; }
       case 'model_call': S[e.agent] = { t: 'Model answered in ' + e.seconds + 's, sending files', busy: true }; break;
       case 'model_error': S[e.agent] = { t: 'Model error', tone: 'bad' }; break;
       case 'submission_in': {
         got.add(e.role);
         S[e.role] = { t: 'Delivered round ' + e.round + ', waiting for the verdict' };
         const need = round === 1 ? 2 : 1;
-        S.orchestrator = got.size >= need ? { t: 'Running pytest', busy: true } : { t: 'Waiting for the other agent', busy: true };
+        S.orchestrator = got.size >= need ? { t: 'Running the tests', busy: true } : { t: 'Waiting for the other agent', busy: true };
         break; }
-      case 'pytest': S.orchestrator = { t: e.exit_code === 0 ? 'Tests passed, deciding' : 'Tests failed, deciding', busy: true, tone: e.exit_code === 0 ? 'ok' : 'bad' }; break;
+      case 'pytest': {
+        const n = failCount(e.report);
+        S.orchestrator = { t: e.exit_code === 0 ? 'Tests passed, deciding' : 'Tests failed, deciding', busy: true, tone: e.exit_code === 0 ? 'ok' : 'bad',
+          bubble: e.exit_code === 0 ? null : { text: (n ? n + ' failing: ' : '') + firstFail(e.report), tone: 'bad', mark: '!' } };
+        break; }
       case 'decision':
         if (e.outcome === 'pass') {
           S.orchestrator = { t: 'PASS', tone: 'ok' }; S.engineer = { t: 'Done', tone: 'ok' }; S.tester = { t: 'Done', tone: 'ok' };
           if (hasUser) S.user = { t: 'Got the result' };
-        } else if (e.outcome === 'fail_final') {
-          S.orchestrator = { t: 'FAIL after ' + e.round + ' round(s)', tone: 'bad' }; S.engineer = { t: 'Gave up', tone: 'bad' }; S.tester = { t: 'Done' };
+        } else if (e.outcome === 'fail_final' || e.outcome === 'timeout') {
+          S.orchestrator = { t: e.outcome === 'timeout' ? 'FAIL: an agent went silent' : 'FAIL after ' + e.round + ' round(s)', tone: 'bad' }; S.engineer = { t: 'Gave up', tone: 'bad' }; S.tester = { t: 'Done' };
         } else S.orchestrator = { t: 'Deciding to retry', busy: true, tone: 'warn' };
         break;
+      case 'score': {
+        const r = e.report || {};
+        S.orchestrator = { t: 'Scored: caught ' + r.caught + '/' + r.total, tone: r.catch_rate >= 1 ? 'ok' : 'warn',
+          bubble: { text: 'Tester caught ' + r.caught + '/' + r.total + ', ' + (r.false_alarms || []).length + ' false alarms. Engineer hidden tests: ' + (r.engineer_passes_hidden_tests ? 'pass' : 'fail'), tone: r.catch_rate >= 1 ? 'ok' : 'warn', mark: '#' } };
+        break; }
     }
   }
   return S;
 }
 
-/* ---------- sidebar + summary ---------- */
+/* ---------- sidebar + summary + highlights ---------- */
 function renderTasks() {
   const box = document.getElementById('tasks');
   box.replaceChildren();
   const ids = taskIds();
-  if (!ids.length) { box.append(h('div', 'empty', 'No tasks yet.')); return; }
+  if (!ids.length) { box.append(h('div', 'empty', 'No issues yet.')); return; }
   for (const id of ids) {
     const c = createdOf(id), o = outcomeOf(id);
     const b = h('button', 'task' + (id === selectedTask ? ' sel' : ''));
     const top = h('div', 'top');
-    const chip = h('span', 'chip ' + chipClass(o), o === 'running' ? 'running' : o.toUpperCase());
-    top.append(h('span', '', id), chip);
-    b.append(top, h('div', 'sub', c.ticket), h('div', 'sub', new Date(c.ts).toLocaleTimeString()));
+    top.append(h('span', 'name', titleOf(c)), h('span', 'chip ' + chipClass(o), o === 'running' ? 'running' : o.toUpperCase()));
+    b.append(top);
     b.onclick = () => selectTask(id);
     box.append(b);
   }
 }
 
+function scoreOf(id) { const e = DATA.events.filter(x => x.kind === 'score' && x.task_id === id).pop(); return e ? e.report : null; }
+
 function renderSummary(id, rows) {
   const box = document.getElementById('summary');
   box.replaceChildren();
   if (!id) return;
-  const c = createdOf(id), o = outcomeOf(id);
+  const c = createdOf(id), o = outcomeOf(id), sc = scoreOf(id);
   const rounds = Math.max(1, ...DATA.events.filter(e => e.task_id === id && e.round).map(e => e.round));
-  const span = rows.length > 1 ? ((Date.parse(rows[rows.length - 1].ts) - Date.parse(rows[0].ts)) / 1000).toFixed(1) + 's' : '-';
+  const span = rows.length > 1 ? ((Date.parse(rows[rows.length - 1].ts) - Date.parse(rows[0].ts)) / 1000).toFixed(0) + 's' : '-';
   const wrap = h('div', 'summary');
   const head = h('div');
-  head.append(document.createTextNode('Task ' + id + '  '), h('span', 'chip ' + chipClass(o), o === 'running' ? 'running' : o.toUpperCase()));
+  head.append(h('strong', '', titleOf(c)), document.createTextNode('  '), h('span', 'chip ' + chipClass(o), o === 'running' ? 'running' : o.toUpperCase()));
   const m = h('div', 'meta');
-  for (const s of ['rounds: ' + rounds, 'elapsed: ' + span, 'events: ' + rows.length]) m.append(h('span', '', s));
-  wrap.append(head, h('div', 'ticket', c.ticket), m);
+  const bits = ['rounds: ' + rounds, 'elapsed: ' + span];
+  if (sc) bits.push('Tester caught ' + sc.caught + '/' + sc.total, 'false alarms: ' + (sc.false_alarms || []).length, 'Engineer hidden tests: ' + (sc.engineer_passes_hidden_tests ? 'pass' : 'fail'));
+  for (const s of bits) m.append(h('span', '', s));
+  wrap.append(head, m);
   box.append(wrap);
+}
+
+function highlightsFor(rows) {
+  const out = [];
+  rows.forEach((r, i) => {
+    const e = r.raw || {};
+    if (e.kind === 'pushback') out.push({ i, tone: 'warn', label: cap(e.role) + ' pushed back (' + (e.items || []).length + ')' });
+    else if (e.kind === 'send' && e.type === 'Clarification') {
+      const gap = (e.answers || []).filter(a => /^Not specified/.test(a.answer)).length;
+      out.push({ i, tone: gap ? 'warn' : 'ok', label: 'Answers to ' + e.role + (gap ? ' (' + gap + ' not covered)' : '') });
+    } else if (e.kind === 'agent_query_group') out.push({ i, tone: 'info', label: cap(e.agent) + ' ran ' + e.queries.length + ' SQL' });
+    else if (e.kind === 'pytest') out.push({ i, tone: e.exit_code === 0 ? 'ok' : 'bad', label: 'Round ' + e.round + (e.exit_code === 0 ? ' passed' : /^stage 'migrate'/.test(e.report || '') ? ' failed: migration crashed' : ' failed') });
+    else if (e.kind === 'score') out.push({ i, tone: 'info', label: 'Score ' + e.report.caught + '/' + e.report.total });
+    else if (e.kind === 'decision' && e.outcome === 'timeout') out.push({ i, tone: 'bad', label: 'Timed out' });
+  });
+  return out;
+}
+
+function renderHighlights(rows) {
+  const box = document.getElementById('highlights');
+  box.replaceChildren();
+  if (tab !== 'avatars') return;
+  for (const hgl of highlightsFor(rows)) {
+    const b = h('button', hgl.tone, hgl.label);
+    b.onclick = () => { live = false; stopPlay(); step = hgl.i; animateNext = false; renderAvatars(); };
+    box.append(b);
+  }
 }
 
 /* ---------- avatars ---------- */
 const POS = { user: [105, 85], orchestrator: [450, 85], engineer: [185, 290], tester: [715, 290] };
 const R = 56;
+
+function wrapText(text, n) {
+  const words = String(text || '').split(/\s+/), lines = [''];
+  for (const w of words) { if ((lines[lines.length - 1] + ' ' + w).trim().length > n) lines.push(w); else lines[lines.length - 1] = (lines[lines.length - 1] + ' ' + w).trim(); }
+  return lines;
+}
+
+function bubble(role, b) {
+  const col = cssVar(b.tone === 'info' ? role : b.tone);
+  const raw = wrapText(b.text, 31), lines = raw.slice(0, 3);
+  if (raw.length > 3) lines[2] = short(lines[2] + ' ' + raw.slice(3).join(' '), 31);
+  const w = 216, hgt = 14 + lines.length * 15;
+  const tx = role === 'orchestrator' ? 78 : -w / 2, ty = role === 'orchestrator' ? -62 : -R - 16 - hgt;
+  const g = el('g', { transform: `translate(${tx},${ty})` });
+  g.append(el('rect', { width: w, height: hgt, rx: 8, fill: cssVar('panel'), stroke: col, 'stroke-width': 2 }));
+  const mk = b.mark || '';
+  g.append(el('rect', { x: 6, y: 6, width: mk.length > 1 ? 28 : 18, height: 18, rx: 9, fill: col }));
+  g.append(el('text', { x: 6 + (mk.length > 1 ? 14 : 9), y: 19, 'text-anchor': 'middle', style: 'fill:#fff;font-weight:700;font-size:11px' }, mk));
+  const x0 = mk.length > 1 ? 40 : 30;
+  lines.forEach((ln, i) => g.append(el('text', { x: x0, y: 19 + i * 15, style: 'font-size:12px' }, ln)));
+  return g;
+}
 
 function avatar(role, state) {
   const [x, y] = POS[role], col = cssVar(role);
@@ -308,6 +417,7 @@ function avatar(role, state) {
   const words = state.t.split(' '), lines = [''];
   for (const w of words) { if ((lines[lines.length - 1] + ' ' + w).trim().length > 30) lines.push(w); else lines[lines.length - 1] = (lines[lines.length - 1] + ' ' + w).trim(); }
   lines.slice(0, 3).forEach((ln, i) => g.append(el('text', { x: 0, y: R + 38 + i * 15, 'text-anchor': 'middle', class: 'status', style: state.tone ? 'fill:' + cssVar(state.tone) : '' }, ln)));
+  if (state.bubble && state.bubble.text) g.append(bubble(role, state.bubble));
   return g;
 }
 
@@ -407,6 +517,50 @@ function diffBlock(f) {
   return d;
 }
 
+function qaCards(box, pairs) {
+  for (const p of pairs) {
+    const c = h('div', 'qa');
+    if (p.point) c.append(h('div', 'pt', p.point));
+    c.append(h('div', 'q', p.question));
+    if (p.answer !== undefined) {
+      const gap = /^Not specified/.test(p.answer);
+      c.append(h('div', 'a' + (gap ? ' gap' : ''), (gap ? 'The contract does not cover this, the agent must decide: ' : 'Answer: ') + p.answer));
+    }
+    box.append(c);
+  }
+}
+function failureList(box, report) {
+  const lines = (report || '').split('\n').filter(Boolean);
+  if (!lines.length) { box.append(h('div', 'note sub', 'no details reported')); return; }
+  for (const ln of lines) {
+    if (ln.startsWith('FAILED ')) {
+      const body = ln.slice(7), at = body.indexOf(': ');
+      const f = h('div', 'fail');
+      f.append(h('div', 'n', at < 0 ? body : body.slice(0, at)));
+      if (at >= 0) f.append(h('div', 'm', body.slice(at + 2)));
+      box.append(f);
+    } else box.append(h('div', 'note sub', ln));
+  }
+}
+function scoreCard(box, r) {
+  const t = h('table', 'sc');
+  const rows = [['Tester caught', r.caught + ' of ' + r.total + ' planted problems (' + Math.round(r.catch_rate * 100) + '%)'],
+    ['False alarms', (r.false_alarms || []).length + ' (tests that fail on the correct solution)'],
+    ['Tester suite passes on the reference', r.tester_suite_passes_on_reference ? 'yes' : 'no'],
+    ['Engineer passes the hidden tests', r.engineer_passes_hidden_tests ? 'yes' : 'no']];
+  for (const [k, v] of rows) { const tr = h('tr'); tr.append(h('th', '', k), h('td', '', v)); t.append(tr); }
+  box.append(t);
+  section(box, 'By tier');
+  const t2 = h('table', 'sc');
+  for (const [tier, v] of Object.entries(r.catch_rate_by_tier || {})) { const tr = h('tr'); tr.append(h('th', '', tier), h('td', '', v.caught + ' / ' + v.total)); t2.append(tr); }
+  box.append(t2);
+  section(box, 'Planted problems');
+  const ul = h('ul');
+  for (const l of r.landmines || []) ul.append(h('li', '', l.id + ' (' + l.tier + '): ' + (l.caught ? 'caught' : 'missed')));
+  box.append(ul);
+  if ((r.engineer_hidden_failures || []).length) { section(box, 'Hidden tests the Engineer failed'); const u = h('ul'); for (const n of r.engineer_hidden_failures) u.append(h('li', '', n)); box.append(u); }
+}
+
 function renderDetails(row) {
   const box = document.getElementById('details');
   box.replaceChildren();
@@ -415,33 +569,50 @@ function renderDetails(row) {
   box.append(h('h3', '', stepLabel(row)));
   box.append(h('div', 'sub', new Date(row.ts).toLocaleTimeString([], { hour12: false }) + (e.round ? '  ·  round ' + e.round : '')));
   switch (e.kind) {
-    case 'chat_in': section(box, 'Ticket'); textBlock(box, e.text); break;
+    case 'chat_in': section(box, 'What the user said'); textBlock(box, e.text); break;
+    case 'task_created': section(box, 'Issue'); textBlock(box, e.ticket); if (e.contract_mode) box.append(h('div', 'sub', 'Contract mode: ' + e.contract_mode)); break;
+    case 'pushback':
+      section(box, cap(e.role) + ' refuses to guess');
+      box.append(h('div', 'sub', 'These questions about the requirement went to the Orchestrator. The agent waits for answers before writing anything.'));
+      qaCards(box, e.items || []);
+      break;
     case 'send':
-      if (e.type === 'Feedback') {
-        section(box, 'Feedback to the Engineer');
+      if (e.type === 'Clarification') {
+        section(box, 'Answers from the approved contract');
+        box.append(h('div', 'sub', 'The Orchestrator answers only from the contract. Where the contract is silent, the agent must decide and record an assumption.'));
+        qaCards(box, e.answers || []);
+      } else if (e.type === 'Feedback') {
+        section(box, 'Why the Engineer has to try again');
         box.append(h('div', 'sub', 'Failing test names and assertion lines only, never test source.'));
-        textBlock(box, e.report || '');
+        failureList(box, e.report);
       } else {
-        section(box, 'Contract sent to the ' + e.role);
-        box.append(h('div', 'sub', 'The Engineer and Tester receive the same contract. Neither sees the other’s work.'));
-        textBlock(box, TASK && TASK.contract ? TASK.contract : '(contract not recorded for this task)');
+        section(box, 'Requirement given to the ' + e.role);
+        box.append(h('div', 'sub', 'Both agents get the same requirement. Neither sees the other’s work.'));
+        textBlock(box, TASK && TASK.contract ? TASK.contract : '(requirement not recorded for this task)');
       }
+      break;
+    case 'agent_query_group':
+      section(box, 'SQL the ' + e.agent + ' ran against the real data');
+      for (const q of e.queries) { textBlock(box, q.sql); const r = h('pre', 'block'); r.textContent = q.result || ''; r.style.opacity = '.8'; r.style.marginTop = '4px'; box.append(r); box.append(h('div', '', '')); }
       break;
     case 'submission_in': {
       const sub = TASK && TASK.submissions.find(s => s.role === e.role && s.round === e.round);
       section(box, e.role === 'tester' ? 'What the tests cover' : 'Reason for the change');
       box.append(h('div', 'note', (sub ? sub.notes : e.notes) || 'no reason given'));
       assumptionList(box, sub ? sub.assumptions : e.assumptions);
+      const doubts = (sub ? sub.pushback : e.pushback) || [];
+      if (doubts.length) { section(box, 'Doubts it proceeded despite'); qaCards(box, doubts); }
       if (sub && sub.rejected.length) { section(box, 'Rejected paths'); const ul = h('ul'); for (const r of sub.rejected) ul.append(h('li', '', r)); box.append(ul); }
       section(box, e.role === 'tester' ? 'Tests written' : 'Code changes');
       if (sub) for (const f of sub.files) box.append(diffBlock(f));
       else { box.append(h('div', 'sub', 'File contents were not saved for this task.')); kv(box, e.files); }
       break; }
-    case 'pytest': {
-      section(box, e.exit_code === 0 ? 'All tests passed' : 'Tests failed (exit ' + e.exit_code + ')');
-      if (e.report) textBlock(box, e.report);
-      break; }
-    case 'model_call': section(box, 'Model call'); kv(box, { seconds: e.seconds, files: (e.files || []).join(', ') }); break;
+    case 'pytest':
+      section(box, e.exit_code === 0 ? 'All tests passed' : 'How it failed');
+      if (e.exit_code !== 0) failureList(box, e.report);
+      break;
+    case 'score': section(box, 'Score from the experiment rig'); scoreCard(box, e.report || e); break;
+    case 'model_call': section(box, 'Model call'); kv(box, { seconds: e.seconds, 'SQL queries': e.queries, files: (e.files || []).join(', ') }); break;
     case 'model_error': section(box, 'Model error'); textBlock(box, e.error || ''); break;
     default: section(box, 'Event'); { const c = Object.assign({}, e); delete c.ts; delete c.kind; kv(box, c); }
   }
@@ -522,6 +693,7 @@ function render() {
   renderTasks();
   const rows = selectedTask ? rowsFor(selectedTask) : [];
   renderSummary(selectedTask, rows);
+  renderHighlights(rows);
   if (tab === 'avatars') renderAvatars(); else renderDiagram(rows);
 }
 function selectTask(id) { selectedTask = id; selectedRow = null; live = true; stopPlay(); lastKey = ''; poll(); }

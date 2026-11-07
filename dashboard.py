@@ -103,7 +103,8 @@ def build_task(task_id: str) -> dict | None:
             prev[d["role"]][path] = str(content)
         out.append({
             "round": d["round"], "role": d["role"], "notes": d.get("notes", ""),
-            "assumptions": d.get("assumptions", []), "rejected": d.get("rejected", []), "files": files,
+            "assumptions": d.get("assumptions", []), "pushback": d.get("pushback", []),
+            "rejected": d.get("rejected", []), "files": files,
         })
     return {"contract": contract, "submissions": out}
 

@@ -1,26 +1,29 @@
-import asyncio
 import os
-import time
 
 from uagents import Agent, Context
 
+from agent_core import clarification_prompt, turn
 from events import log_event
-from llm import SYSTEMS, call_model
-from messages import Submission, TaskAssigned
+from messages import Clarification, TaskAssigned
 
 
-def make_tester() -> Agent:
+def _agent(name: str) -> Agent:
     kwargs = {}
-    if os.getenv("TESTER_PORT"):
-        kwargs["port"] = int(os.environ["TESTER_PORT"])
-    agent = Agent(
-        name="tester",
-        seed=os.getenv("TESTER_SEED"),
+    if os.getenv(f"{name.upper()}_PORT"):
+        kwargs["port"] = int(os.environ[f"{name.upper()}_PORT"])
+    return Agent(
+        name=name,
+        seed=os.getenv(f"{name.upper()}_SEED"),
         mailbox=os.getenv("USE_MAILBOX") == "1",
         report_events=os.getenv("REPORT_EVENTS", "1") == "1",
         **kwargs,
     )
+
+
+def make_tester() -> Agent:
+    agent = _agent("tester")
     orch = os.environ["ORCHESTRATOR_ADDRESS"]
+    tasks: dict[str, dict] = {}
 
     @agent.on_message(TaskAssigned)
     async def on_task(ctx: Context, sender: str, msg: TaskAssigned):
@@ -29,24 +32,20 @@ def make_tester() -> Agent:
             log_event("agent_ignored", agent="tester", type="TaskAssigned", sender=sender[:14], role=msg.role)
             return
         log_event("agent_received", agent="tester", type="TaskAssigned", task_id=msg.task_id, round=msg.round)
-        ctx.logger.info(f"[{msg.task_id}] writing tests from the contract")
-        t0 = time.monotonic()
-        try:
-            out = await asyncio.to_thread(
-                call_model, "tester", SYSTEMS["tester"], f"Contract:\n{msg.contract}", msg.round
-            )
-        except Exception as e:
-            log_event("model_error", agent="tester", task_id=msg.task_id, round=msg.round, error=f"{type(e).__name__}: {str(e)[:300]}")
-            raise
-        log_event(
-            "model_call", agent="tester", task_id=msg.task_id, round=msg.round,
-            seconds=round(time.monotonic() - t0, 1), files=list(out["files"]),
-        )
-        await ctx.send(
-            orch,
-            Submission(task_id=msg.task_id, role="tester", round=msg.round, files=out["files"], notes=out["notes"], assumptions=out["assumptions"]),
-        )
-        log_event("agent_sent", agent="tester", type="Submission", task_id=msg.task_id, round=msg.round)
+        mem = tasks[msg.task_id] = {"ticket": msg.ticket}
+        ctx.logger.info(f"[{msg.task_id}] reading the requirement")
+        await turn(ctx, "tester", orch, msg.task_id, msg.round, f"Requirement:\n{msg.contract}", msg.ticket, mem, True)
+
+    @agent.on_message(Clarification)
+    async def on_clarification(ctx: Context, sender: str, msg: Clarification):
+        if sender != orch or msg.task_id not in tasks:
+            ctx.logger.warning(f"ignored Clarification from {sender[:14]}...")
+            log_event("agent_ignored", agent="tester", type="Clarification", sender=sender[:14])
+            return
+        log_event("agent_received", agent="tester", type="Clarification", task_id=msg.task_id, round=msg.round)
+        mem = tasks[msg.task_id]
+        await turn(ctx, "tester", orch, msg.task_id, msg.round, clarification_prompt(mem["prompt"], msg.answers),
+                   mem["ticket"], mem, False)
 
     return agent
 
