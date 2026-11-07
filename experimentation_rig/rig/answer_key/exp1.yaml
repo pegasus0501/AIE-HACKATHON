@@ -1,0 +1,121 @@
+ticket: exp1
+title: orders.amount TEXT -> numeric via table rebuild
+landmines:
+  - id: L1-01
+    tier: T2
+    description: Currency symbols and thousands commas on a small share of rows.
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE amount LIKE '%$%' OR amount LIKE '%'||char(8364)||'%' OR amount LIKE '%'||char(163)||'%' OR (amount LIKE '%,%' AND source_system <> 'eu_legacy')"
+    expected_probe_result: 38
+    ids_sql: "SELECT order_id FROM orders WHERE amount LIKE '%$%' OR amount LIKE '%'||char(8364)||'%' OR amount LIKE '%'||char(163)||'%' OR (amount LIKE '%,%' AND source_system <> 'eu_legacy')"
+    population_sql: "SELECT COUNT(*) FROM orders"
+    max_fraction: 0.003
+    exposed_by: [recoverable_quarantine, items_reconcile]
+    mutant: mutants/exp1/L1-01
+  - id: L1-02
+    tier: T2
+    description: Scientific notation on a handful of scattered rows.
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE amount GLOB '*[0-9][eE][+-][0-9]*'"
+    expected_probe_result: 6
+    ids_sql: "SELECT order_id FROM orders WHERE amount GLOB '*[0-9][eE][+-][0-9]*'"
+    population_sql: "SELECT COUNT(*) FROM orders"
+    max_fraction: 0.003
+    exposed_by: [recoverable_quarantine]
+    mutant: mutants/exp1/L1-02
+  - id: L1-03
+    tier: T3
+    description: eu_legacy rows use decimal commas ('1.200,50') plus ambiguous values like '1,200'.
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE source_system = 'eu_legacy'"
+    expected_probe_result: 90
+    ids_sql: "SELECT order_id FROM orders WHERE source_system = 'eu_legacy'"
+    population_sql: "SELECT COUNT(*) FROM orders"
+    max_fraction: 0.006
+    exposed_by: [items_reconcile, source_totals]
+    mutant: mutants/exp1/L1-03
+  - id: L1-04
+    tier: T2
+    description: Accounting negatives written '(50.00)'.
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE amount LIKE '(%)'"
+    expected_probe_result: 7
+    ids_sql: "SELECT order_id FROM orders WHERE amount LIKE '(%)'"
+    population_sql: "SELECT COUNT(*) FROM orders"
+    max_fraction: 0.003
+    exposed_by: [recoverable_quarantine]
+    mutant: mutants/exp1/L1-04
+  - id: L1-05
+    tier: T2
+    description: Blanks stored as '', ' ', 'null', 'N/A' alongside real NULLs.
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE amount IS NULL OR trim(amount) = '' OR lower(trim(amount)) IN ('null', 'n/a')"
+    expected_probe_result: 24
+    ids_sql: "SELECT order_id FROM orders WHERE amount IS NULL OR trim(amount) = '' OR lower(trim(amount)) IN ('null', 'n/a')"
+    population_sql: "SELECT COUNT(*) FROM orders"
+    max_fraction: 0.003
+    exposed_by: [silent_zero, items_reconcile]
+    mutant: mutants/exp1/L1-05
+  - id: L1-06
+    tier: T3
+    description: Invisible characters (non-breaking space, zero-width space, tab) inside numeric strings.
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE instr(amount, char(160)) > 0 OR instr(amount, char(8203)) > 0 OR instr(amount, char(9)) > 0"
+    expected_probe_result: 14
+    ids_sql: "SELECT order_id FROM orders WHERE instr(amount, char(160)) > 0 OR instr(amount, char(8203)) > 0 OR instr(amount, char(9)) > 0"
+    population_sql: "SELECT COUNT(*) FROM orders"
+    max_fraction: 0.003
+    exposed_by: [recoverable_quarantine, items_reconcile]
+    mutant: mutants/exp1/L1-06
+  - id: L1-07
+    tier: T3
+    description: pos_v2 rows store whole cents as integers; valid-looking, 100x wrong, and the amount disagrees with the order items.
+    tables: [orders, order_items]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE source_system = 'pos_v2'"
+    expected_probe_result: 60
+    ids_sql: "SELECT order_id FROM orders WHERE source_system = 'pos_v2'"
+    population_sql: "SELECT COUNT(*) FROM orders"
+    max_fraction: 0.004
+    exposed_by: [items_reconcile, source_totals]
+    mutant: mutants/exp1/L1-07
+  - id: L1-08
+    tier: T3
+    description: Sentinels '-1' and '-999' meaning unknown, where payments hold the real amount.
+    tables: [orders, payments]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE amount IN ('-1', '-999')"
+    expected_probe_result: 10
+    ids_sql: "SELECT order_id FROM orders WHERE amount IN ('-1', '-999')"
+    population_sql: "SELECT COUNT(*) FROM orders"
+    max_fraction: 0.003
+    exposed_by: [items_reconcile, source_totals]
+    mutant: mutants/exp1/L1-08
+  - id: L1-09
+    tier: T4
+    description: A few scattered rows carry a currency code ('USD 12.00', '9.50 EUR').
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE amount GLOB '[A-Z][A-Z][A-Z] *' OR amount GLOB '* [A-Z][A-Z][A-Z]'"
+    expected_probe_result: 4
+    ids_sql: "SELECT order_id FROM orders WHERE amount GLOB '[A-Z][A-Z][A-Z] *' OR amount GLOB '* [A-Z][A-Z][A-Z]'"
+    population_sql: "SELECT COUNT(*) FROM orders"
+    max_fraction: 0.003
+    exposed_by: [recoverable_quarantine]
+    mutant: mutants/exp1/L1-09
+  - id: L1-10
+    tier: T2
+    description: Three-decimal values; a rounding policy is needed.
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE amount GLOB '*.[0-9][0-9][0-9]'"
+    expected_probe_result: 9
+    ids_sql: "SELECT order_id FROM orders WHERE amount GLOB '*.[0-9][0-9][0-9]'"
+    population_sql: "SELECT COUNT(*) FROM orders"
+    max_fraction: 0.003
+    exposed_by: [items_reconcile]
+    mutant: mutants/exp1/L1-10
+  - id: L1-11
+    tier: T2
+    description: The table rebuild must recreate v_orders_clean, v_monthly_revenue, the amount index and the trigger.
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM sqlite_master WHERE (tbl_name = 'orders' AND type IN ('index', 'trigger')) OR name IN ('v_orders_clean', 'v_monthly_revenue')"
+    expected_probe_result: 5
+    exposed_by: [schema_objects]
+    mutant: mutants/exp1/L1-11
