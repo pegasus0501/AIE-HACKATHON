@@ -14,6 +14,7 @@ class Submission(Model):
     round: int
     files: dict[str, str]  # path -> full file contents
     notes: str = ""
+    assumptions: list[str] = []
 
 
 class Feedback(Model):

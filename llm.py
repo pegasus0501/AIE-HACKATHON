@@ -8,12 +8,17 @@ SYSTEMS = {
     "engineer": (
         "You are the Engineer. Implement the contract with the minimal correct change "
         "and make it work. You may only write files under migrations/, queries/ or src/. "
-        'Reply with JSON only: {"files": {"path": "full file content"}, "notes": "short"}'
+        "Use only modules, functions and tables that exist or that you create; never invent APIs. "
+        'Reply with JSON only: {"files": {"path": "full file content"}, '
+        '"notes": "why you made this change, 1-2 sentences", '
+        '"assumptions": ["each assumption you made that the contract does not state"]}'
     ),
     "tester": (
         "You are the Tester. Be skeptical. From the contract ONLY, write pytest tests "
         "that try to break the implementation. You may only write files under tests/. "
-        'Reply with JSON only: {"files": {"path": "full file content"}, "notes": "short"}'
+        'Reply with JSON only: {"files": {"path": "full file content"}, '
+        '"notes": "what the tests cover, 1-2 sentences", '
+        '"assumptions": ["each assumption you made that the contract does not state"]}'
     ),
 }
 
@@ -32,7 +37,9 @@ def _parse(text: str) -> dict:
         isinstance(k, str) and isinstance(v, str) for k, v in files.items()
     ):
         raise ValueError('JSON must contain "files": {path: content}')
-    return {"files": files, "notes": str(data.get("notes", ""))}
+    raw = data.get("assumptions", [])
+    assumptions = [str(a) for a in raw] if isinstance(raw, list) else []
+    return {"files": files, "notes": str(data.get("notes", "")), "assumptions": assumptions}
 
 
 # ---- stub (STUB_LLM=1): fixed ticket "add(a, b) in src/calc.py", no network ----
@@ -46,19 +53,24 @@ _TESTS = (
 
 def _stub(role: str, round_no: int) -> dict:
     if role == "tester":
-        return {"files": {"tests/test_calc.py": _TESTS}, "notes": "stub tests"}
+        return {
+            "files": {"tests/test_calc.py": _TESTS},
+            "notes": "stub tests: positive and negative sums",
+            "assumptions": ["The contract only asks for the sum of two numbers (stub)"],
+        }
     buggy = os.getenv("STUB_SCENARIO", "pass") == "fail_then_pass" and round_no == 1
     body = "a - b" if buggy else "a + b"
     return {
         "files": {"src/calc.py": f"def add(a, b):\n    return {body}\n"},
-        "notes": "stub engineer (buggy)" if buggy else "stub engineer",
+        "notes": "stub engineer: subtracts instead of adds (bug)" if buggy else "stub engineer: returns a + b",
+        "assumptions": ["Inputs are plain numbers (stub)"],
     }
 
 
 # ---- real calls ----
 
 def call_model(role: str, system: str, user: str, round_no: int = 1) -> dict:
-    """Return {"files": {path: content}, "notes": str}. round_no only matters for the stub."""
+    """Return {"files", "notes", "assumptions"}. round_no only matters for the stub."""
     if os.getenv("STUB_LLM") == "1":
         return _stub(role, round_no)
 

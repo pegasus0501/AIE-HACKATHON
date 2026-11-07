@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Lineage</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --panel:#ffffff; --text:#1c2230; --muted:#6a7385; --line:#d9dde5; --grid:#e8ebf0;
+    --user:#64748b; --orchestrator:#2563eb; --engineer:#059669; --tester:#9333ea;
+    --ok:#15803d; --bad:#dc2626; --warn:#b45309; --sel:#eef3ff; --addbg:rgba(34,197,94,.16); --delbg:rgba(239,68,68,.16);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#10131a; --panel:#181c26; --text:#e6e9f0; --muted:#8c95a8; --line:#2b3140; --grid:#222836;
+      --user:#94a3b8; --orchestrator:#60a5fa; --engineer:#34d399; --tester:#c084fc;
+      --ok:#4ade80; --bad:#f87171; --warn:#fbbf24; --sel:#1d2640; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  .live { margin-left:auto; display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
+  .dot.on { background:var(--ok); } .dot.off { background:var(--bad); }
+  main { display:grid; grid-template-columns:260px 1fr; min-height:calc(100vh - 50px); }
+  aside { border-right:1px solid var(--line); background:var(--panel); overflow:auto; }
+  .task { display:block; width:100%; text-align:left; padding:10px 14px; border:0; border-bottom:1px solid var(--line);
+    background:transparent; color:inherit; font:inherit; cursor:pointer; }
+  .task:hover { background:var(--grid); } .task.sel { background:var(--sel); }
+  .task .top { display:flex; justify-content:space-between; gap:8px; font-weight:600; }
+  .sub { color:var(--muted); font-size:12px; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chip { font-size:11px; padding:1px 7px; border-radius:999px; border:1px solid currentColor; white-space:nowrap; }
+  .chip.pass { color:var(--ok); } .chip.fail { color:var(--bad); } .chip.run { color:var(--warn); }
+  section { padding:16px; min-width:0; }
+  .summary { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:12px; }
+  .summary .ticket { margin:4px 0 8px; } .summary .meta { color:var(--muted); font-size:12px; display:flex; gap:16px; flex-wrap:wrap; }
+  .tabs { display:flex; gap:4px; margin-bottom:10px; border-bottom:1px solid var(--line); }
+  .tab { border:0; background:transparent; color:var(--muted); padding:8px 14px; font:inherit; cursor:pointer; border-bottom:2px solid transparent; }
+  .tab.on { color:var(--text); border-bottom-color:var(--orchestrator); font-weight:600; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+  .controls { display:flex; gap:8px; align-items:center; padding:8px 10px; flex-wrap:wrap; }
+  .controls button { font:inherit; padding:4px 10px; border:1px solid var(--line); background:var(--bg); color:var(--text); border-radius:6px; cursor:pointer; }
+  .controls button:hover { background:var(--grid); } .controls button.on { border-color:var(--ok); color:var(--ok); }
+  .controls input[type=range] { flex:1; min-width:140px; }
+  .controls .pos { color:var(--muted); font-size:12px; min-width:120px; text-align:right; }
+  svg.stage { width:100%; height:auto; max-height:430px; display:block; }
+  svg text { font:12px system-ui,-apple-system,Segoe UI,sans-serif; fill:var(--text); }
+  svg .muted { fill:var(--muted); font-size:11px; } svg .lane-title { font-weight:600; font-size:13px; }
+  svg .who { font-weight:700; font-size:14px; } svg .status { font-size:12px; }
+  svg g.row { cursor:pointer; } svg g.row:hover rect.hit { fill:var(--grid); } svg g.row.sel rect.hit { fill:var(--sel); }
+  .pulse { transform-box:fill-box; transform-origin:center; animation:pulse 1.4s ease-out infinite; }
+  @keyframes pulse { 0% { opacity:.8; transform:scale(1); } 100% { opacity:0; transform:scale(1.28); } }
+  @media (prefers-reduced-motion: reduce) { .pulse { animation:none; opacity:.5; } }
+  .lower { display:grid; grid-template-columns:300px 1fr; gap:12px; margin-top:12px; align-items:start; }
+  #steps { max-height:520px; overflow:auto; }
+  .step { display:flex; gap:8px; width:100%; text-align:left; border:0; border-bottom:1px solid var(--line); background:transparent; color:inherit;
+    font:inherit; padding:7px 10px; cursor:pointer; }
+  .step:hover { background:var(--grid); } .step.sel { background:var(--sel); } .step.future { opacity:.45; }
+  .step .t { color:var(--muted); font-size:11px; min-width:42px; padding-top:2px; } .step .l { flex:1; font-size:13px; }
+  .step .bar { width:3px; border-radius:2px; }
+  #details { padding:14px; min-width:0; }
+  #details h3 { margin:0 0 4px; font-size:15px; } #details h4 { margin:14px 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  #details ul { margin:0; padding-left:20px; } #details li { margin:2px 0; }
+  .note { white-space:pre-wrap; word-break:break-word; }
+  pre.block, pre.diff { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:10px; margin:0; overflow:auto; max-height:300px;
+    font:12px/1.5 ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap; word-break:break-word; }
+  pre.diff { padding:0; white-space:pre; word-break:normal; }
+  .ln { display:block; padding:0 10px; min-width:max-content; } .ln.add { background:var(--addbg); } .ln.del { background:var(--delbg); } .ln.hdr { color:var(--muted); }
+  details.file { margin:8px 0; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  details.file > summary { padding:6px 10px; cursor:pointer; background:var(--grid); display:flex; gap:10px; align-items:center; }
+  .badge { font-size:11px; padding:0 6px; border-radius:4px; border:1px solid currentColor; } .badge.added { color:var(--ok); } .badge.modified { color:var(--warn); } .badge.unchanged { color:var(--muted); }
+  .plus { color:var(--ok); } .minus { color:var(--bad); }
+  .empty { padding:40px; color:var(--muted); text-align:center; }
+  .tools { display:flex; gap:16px; align-items:center; margin-bottom:8px; color:var(--muted); font-size:12px; }
+  .diagram { overflow:auto; }
+  pre#detail { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin:12px 0 0; overflow:auto; max-height:260px;
+    font:12px/1.5 ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap; word-break:break-word; }
+  @media (max-width:900px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); max-height:200px; } .lower { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Task lineage</h1>
+  <span style="color:var(--muted)">Orchestrator, Engineer and Tester, message by message</span>
+  <span class="live"><span id="dot" class="dot"></span><span id="status">connecting</span></span>
+</header>
+<main>
+  <aside id="tasks"></aside>
+  <section>
+    <div id="summary"></div>
+    <div class="tabs" role="tablist">
+      <button class="tab on" id="tab-avatars" role="tab">Avatars</button>
+      <button class="tab" id="tab-lineage" role="tab">Lineage</button>
+    </div>
+
+    <div id="view-avatars">
+      <div class="card">
+        <div class="controls">
+          <button id="b-prev" title="Previous step">&#9664; Prev</button>
+          <button id="b-play" title="Replay step by step">&#9654; Play</button>
+          <button id="b-next" title="Next step">Next &#9654;</button>
+          <input id="slider" type="range" min="0" max="0" value="0" aria-label="Step">
+          <button id="b-live" title="Follow the newest event">LIVE</button>
+          <span class="pos" id="pos"></span>
+        </div>
+        <div id="stage"></div>
+      </div>
+      <div class="lower">
+        <div class="card" id="steps"></div>
+        <div class="card" id="details"></div>
+      </div>
+    </div>
+
+    <div id="view-lineage" hidden>
+      <div class="tools"><label><input type="checkbox" id="showProgress"> show every progress message to the user</label></div>
+      <div class="card diagram" id="diagram"></div>
+      <pre id="detail" hidden></pre>
+    </div>
+  </section>
+</main>
+<script>
+const LANES = ['user', 'orchestrator', 'engineer', 'tester'];
+const TITLE = { user: 'User', orchestrator: 'Orchestrator', engineer: 'Engineer', tester: 'Tester' };
+const NS = 'http://www.w3.org/2000/svg';
+const REDUCED = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+let DATA = { events: [], agents: {} }, TASK = null;
+let selectedTask = null, selectedRow = null, lastKey = '';
+let tab = 'avatars', step = 0, live = true, animateNext = false, timer = null;
+
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue('--' + n).trim();
+function el(tag, attrs, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in (attrs || {})) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+function h(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+const short = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+const laneOf = a => LANES.includes(a) ? a : (DATA.agents[a] || 'user');
+const showAllProgress = () => document.getElementById('showProgress').checked;
+
+function taskIds() {
+  return DATA.events.filter(e => e.kind === 'task_created').map(e => e.task_id).reverse();
+}
+function createdOf(id) { return DATA.events.find(e => e.kind === 'task_created' && e.task_id === id); }
+
+/* ---------- rows: one entry per event worth showing ---------- */
+function rowsFor(id) {
+  const evs = DATA.events;
+  const created = createdOf(id);
+  if (!created) return [];
+  const hasUser = !!created.user;
+  const showAll = showAllProgress();
+  const rows = [];
+  if (hasUser) {
+    const chat = evs.filter(e => e.kind === 'chat_in' && e.text === created.ticket && Date.parse(e.ts) <= Date.parse(created.ts)).pop();
+    if (chat) rows.push({ ts: chat.ts, from: 'user', to: 'orchestrator', label: 'ticket (chat)', raw: chat });
+  }
+  rows.push({ ts: created.ts, lane: 'orchestrator', label: 'task created', raw: created });
+  for (const e of evs.filter(x => x.task_id === id && x !== created)) {
+    const lane = e.agent || null;
+    switch (e.kind) {
+      case 'send': {
+        const to = e.role || (e.type === 'Feedback' ? 'engineer' : laneOf(e.to));
+        rows.push({ ts: e.ts, from: 'orchestrator', to, label: e.type + (e.round ? ' r' + e.round : ''), raw: e });
+        break; }
+      case 'agent_received': rows.push({ ts: e.ts, lane, label: 'received ' + e.type + ' r' + e.round, raw: e }); break;
+      case 'model_call': rows.push({ ts: e.ts, lane, label: 'model call ' + e.seconds + 's, ' + e.files.length + ' file(s)', raw: e }); break;
+      case 'model_error': rows.push({ ts: e.ts, lane, tone: 'bad', label: 'model error', raw: e }); break;
+      case 'agent_sent': break;
+      case 'submission_in':
+        rows.push({ ts: e.ts, from: e.role, to: 'orchestrator', label: 'Submission r' + e.round + ' (' + Object.keys(e.files || {}).length + ' files)', raw: e });
+        break;
+      case 'path_rejected': rows.push({ ts: e.ts, lane: 'orchestrator', tone: 'warn', label: 'rejected ' + short(e.path, 24), raw: e }); break;
+      case 'pytest': rows.push({ ts: e.ts, lane: 'orchestrator', tone: e.exit_code === 0 ? 'ok' : 'bad', label: 'pytest r' + e.round + ': ' + (e.exit_code === 0 ? 'passed' : 'failed (exit ' + e.exit_code + ')'), raw: e }); break;
+      case 'decision': rows.push({ ts: e.ts, lane: 'orchestrator', tone: e.outcome === 'pass' ? 'ok' : e.outcome === 'retry' ? 'warn' : 'bad', label: 'decision: ' + e.outcome, raw: e }); break;
+      case 'progress': {
+        const t = e.text || '';
+        const key = /^(PASS|FAIL)/.test(t) || /^Working on it/.test(t);
+        if (hasUser && (key || showAll)) rows.push({ ts: e.ts, from: 'orchestrator', to: 'user', label: short(t, 38), tone: /^PASS/.test(t) ? 'ok' : /^FAIL/.test(t) ? 'bad' : '', raw: e });
+        break; }
+    }
+  }
+  rows.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+  return rows;
+}
+
+function outcomeOf(id) {
+  const d = DATA.events.filter(e => e.kind === 'decision' && e.task_id === id);
+  const last = d[d.length - 1];
+  if (!last) return 'running';
+  return last.outcome === 'pass' ? 'pass' : last.outcome === 'fail_final' ? 'fail' : 'running';
+}
+const chipClass = o => o === 'pass' ? 'pass' : o === 'fail' ? 'fail' : 'run';
+
+/* ---------- what each agent is doing at step k ---------- */
+function stateAt(rows, k, hasUser) {
+  const S = { user: { t: hasUser ? 'Waiting for the result' : 'No chat user (queued task)' }, orchestrator: { t: 'Idle' }, engineer: { t: 'Idle' }, tester: { t: 'Idle' } };
+  let got = new Set(), round = 1;
+  for (let i = 0; i <= k && i < rows.length; i++) {
+    const e = rows[i].raw || {};
+    switch (e.kind) {
+      case 'chat_in': S.user = { t: 'Sent the ticket' }; S.orchestrator = { t: 'Received the ticket', busy: true }; break;
+      case 'task_created': S.orchestrator = { t: 'Dispatching the contract to both agents', busy: true }; break;
+      case 'send':
+        if (e.type === 'Feedback') {
+          round = e.round; got = new Set();
+          S.orchestrator = { t: 'Sent feedback, waiting for the Engineer', busy: true };
+          S.engineer = { t: 'Feedback on its way', busy: true };
+        } else {
+          S[e.role] = { t: 'Task on its way', busy: true };
+          S.orchestrator = { t: 'Waiting for Engineer and Tester', busy: true };
+        }
+        break;
+      case 'agent_received':
+        S[e.agent] = { t: e.agent === 'tester' ? 'Writing tests from the contract' : e.type === 'Feedback' ? 'Reading feedback, fixing the code' : 'Writing the implementation', busy: true };
+        break;
+      case 'model_call': S[e.agent] = { t: 'Model answered in ' + e.seconds + 's, sending files', busy: true }; break;
+      case 'model_error': S[e.agent] = { t: 'Model error', tone: 'bad' }; break;
+      case 'submission_in': {
+        got.add(e.role);
+        S[e.role] = { t: 'Delivered round ' + e.round + ', waiting for the verdict' };
+        const need = round === 1 ? 2 : 1;
+        S.orchestrator = got.size >= need ? { t: 'Running pytest', busy: true } : { t: 'Waiting for the other agent', busy: true };
+        break; }
+      case 'pytest': S.orchestrator = { t: e.exit_code === 0 ? 'Tests passed, deciding' : 'Tests failed, deciding', busy: true, tone: e.exit_code === 0 ? 'ok' : 'bad' }; break;
+      case 'decision':
+        if (e.outcome === 'pass') {
+          S.orchestrator = { t: 'PASS', tone: 'ok' }; S.engineer = { t: 'Done', tone: 'ok' }; S.tester = { t: 'Done', tone: 'ok' };
+          if (hasUser) S.user = { t: 'Got the result' };
+        } else if (e.outcome === 'fail_final') {
+          S.orchestrator = { t: 'FAIL after ' + e.round + ' round(s)', tone: 'bad' }; S.engineer = { t: 'Gave up', tone: 'bad' }; S.tester = { t: 'Done' };
+        } else S.orchestrator = { t: 'Deciding to retry', busy: true, tone: 'warn' };
+        break;
+    }
+  }
+  return S;
+}
+
+/* ---------- sidebar + summary ---------- */
+function renderTasks() {
+  const box = document.getElementById('tasks');
+  box.replaceChildren();
+  const ids = taskIds();
+  if (!ids.length) { box.append(h('div', 'empty', 'No tasks yet.')); return; }
+  for (const id of ids) {
+    const c = createdOf(id), o = outcomeOf(id);
+    const b = h('button', 'task' + (id === selectedTask ? ' sel' : ''));
+    const top = h('div', 'top');
+    const chip = h('span', 'chip ' + chipClass(o), o === 'running' ? 'running' : o.toUpperCase());
+    top.append(h('span', '', id), chip);
+    b.append(top, h('div', 'sub', c.ticket), h('div', 'sub', new Date(c.ts).toLocaleTimeString()));
+    b.onclick = () => selectTask(id);
+    box.append(b);
+  }
+}
+
+function renderSummary(id, rows) {
+  const box = document.getElementById('summary');
+  box.replaceChildren();
+  if (!id) return;
+  const c = createdOf(id), o = outcomeOf(id);
+  const rounds = Math.max(1, ...DATA.events.filter(e => e.task_id === id && e.round).map(e => e.round));
+  const span = rows.length > 1 ? ((Date.parse(rows[rows.length - 1].ts) - Date.parse(rows[0].ts)) / 1000).toFixed(1) + 's' : '-';
+  const wrap = h('div', 'summary');
+  const head = h('div');
+  head.append(document.createTextNode('Task ' + id + '  '), h('span', 'chip ' + chipClass(o), o === 'running' ? 'running' : o.toUpperCase()));
+  const m = h('div', 'meta');
+  for (const s of ['rounds: ' + rounds, 'elapsed: ' + span, 'events: ' + rows.length]) m.append(h('span', '', s));
+  wrap.append(head, h('div', 'ticket', c.ticket), m);
+  box.append(wrap);
+}
+
+/* ---------- avatars ---------- */
+const POS = { user: [105, 85], orchestrator: [450, 85], engineer: [185, 290], tester: [715, 290] };
+const R = 56;
+
+function avatar(role, state) {
+  const [x, y] = POS[role], col = cssVar(role);
+  const ring = state.tone ? cssVar(state.tone) : col;
+  const g = el('g', { transform: `translate(${x},${y})` });
+  if (state.busy) g.append(el('circle', { r: R + 4, fill: 'none', stroke: ring, 'stroke-width': 3, class: 'pulse' }));
+  g.append(el('circle', { r: R, fill: col, 'fill-opacity': 0.14, stroke: ring, 'stroke-width': state.tone ? 3 : 2 }));
+  if (role === 'user') {
+    g.append(el('circle', { cx: 0, cy: -14, r: 13, fill: col }));
+    g.append(el('path', { d: 'M-26,26 Q0,-8 26,26 Z', fill: col }));
+  } else {
+    g.append(el('rect', { x: -26, y: -22, width: 52, height: 44, rx: 12, fill: cssVar('panel'), stroke: col, 'stroke-width': 3 }));
+    g.append(el('circle', { cx: -10, cy: -4, r: 4.5, fill: col }));
+    g.append(el('circle', { cx: 10, cy: -4, r: 4.5, fill: col }));
+    g.append(el('path', { d: 'M-9,9 Q0,16 9,9', fill: 'none', stroke: col, 'stroke-width': 2.5, 'stroke-linecap': 'round' }));
+    if (role === 'orchestrator') g.append(el('path', { d: 'M-16,-26 L-10,-40 L0,-30 L10,-40 L16,-26 Z', fill: col }));
+    if (role === 'engineer') {
+      g.append(el('path', { d: 'M-27,-22 Q0,-56 27,-22 Z', fill: col }));
+      g.append(el('rect', { x: -33, y: -25, width: 66, height: 6, rx: 3, fill: col }));
+    }
+    if (role === 'tester') {
+      g.append(el('circle', { cx: 34, cy: 18, r: 11, fill: 'none', stroke: col, 'stroke-width': 3 }));
+      g.append(el('line', { x1: 42, y1: 27, x2: 51, y2: 37, stroke: col, 'stroke-width': 4, 'stroke-linecap': 'round' }));
+    }
+  }
+  g.append(el('text', { x: 0, y: R + 20, 'text-anchor': 'middle', class: 'who', style: 'fill:' + col }, TITLE[role]));
+  const words = state.t.split(' '), lines = [''];
+  for (const w of words) { if ((lines[lines.length - 1] + ' ' + w).trim().length > 30) lines.push(w); else lines[lines.length - 1] = (lines[lines.length - 1] + ' ' + w).trim(); }
+  lines.slice(0, 3).forEach((ln, i) => g.append(el('text', { x: 0, y: R + 38 + i * 15, 'text-anchor': 'middle', class: 'status', style: state.tone ? 'fill:' + cssVar(state.tone) : '' }, ln)));
+  return g;
+}
+
+function edgePoints(a, b) {
+  const [x1, y1] = POS[a], [x2, y2] = POS[b];
+  const d = Math.hypot(x2 - x1, y2 - y1), ux = (x2 - x1) / d, uy = (y2 - y1) / d, off = R + 8;
+  return [x1 + ux * off, y1 + uy * off, x2 - ux * off, y2 - uy * off];
+}
+
+function renderStage(rows, k, hasUser) {
+  const box = document.getElementById('stage');
+  box.replaceChildren();
+  const svg = el('svg', { class: 'stage', viewBox: '0 0 900 410', role: 'img', 'aria-label': 'Agents and the messages between them' });
+  const defs = el('defs');
+  for (const l of LANES) {
+    const m = el('marker', { id: 'ar-' + l, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' });
+    m.append(el('path', { d: 'M0,0 L10,5 L0,10 z', fill: cssVar(l) }));
+    defs.append(m);
+  }
+  svg.append(defs);
+  // static channels
+  const channels = [['user', 'orchestrator'], ['orchestrator', 'engineer'], ['orchestrator', 'tester']];
+  if (!hasUser) channels.shift();
+  for (const [a, b] of channels) { const [x1, y1, x2, y2] = edgePoints(a, b); svg.append(el('line', { x1, y1, x2, y2, stroke: cssVar('line'), 'stroke-width': 2 })); }
+  const [ex1, ey1, ex2, ey2] = edgePoints('engineer', 'tester');
+  svg.append(el('line', { x1: ex1, y1: ey1, x2: ex2, y2: ey2, stroke: cssVar('bad'), 'stroke-opacity': 0.45, 'stroke-dasharray': '6 6', 'stroke-width': 2 }));
+  svg.append(el('text', { x: 450, y: 296, 'text-anchor': 'middle', class: 'muted' }, 'isolated: no direct channel'));
+  // most recent message on the wire
+  let last = -1;
+  for (let i = Math.min(k, rows.length - 1); i >= 0; i--) if (rows[i].from) { last = i; break; }
+  if (last >= 0) {
+    const r = rows[last];
+    const [x1, y1, x2, y2] = edgePoints(r.from, r.to);
+    svg.append(el('line', { x1, y1, x2, y2, stroke: cssVar(r.from), 'stroke-width': 3.5, 'marker-end': `url(#ar-${r.from})` }));
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    const lab = el('g', { transform: `translate(${mx},${my})` });
+    const tw = Math.min(r.label.length * 6.4 + 16, 250);
+    lab.append(el('rect', { x: -tw / 2, y: -11, width: tw, height: 22, rx: 11, fill: cssVar('panel'), stroke: cssVar(r.from) }));
+    lab.append(el('text', { x: 0, y: 4, 'text-anchor': 'middle' }, short(r.label, 38)));
+    svg.append(lab);
+    if (animateNext && !REDUCED && last === k) {
+      const env = el('g');
+      env.append(el('rect', { x: -12, y: -8, width: 24, height: 16, rx: 3, fill: cssVar(r.from), stroke: '#fff', 'stroke-width': 1.5 }));
+      env.append(el('path', { d: 'M-12,-8 L0,2 L12,-8', fill: 'none', stroke: '#fff', 'stroke-width': 1.5 }));
+      env.append(el('animateMotion', { dur: '0.9s', fill: 'freeze', path: `M${x1},${y1} L${x2},${y2}` }));
+      svg.append(env);
+    }
+  }
+  const S = stateAt(rows, k, hasUser);
+  for (const l of LANES) if (l !== 'user' || hasUser) svg.append(avatar(l, S[l]));
+  box.append(svg);
+  animateNext = false;
+}
+
+function stepLabel(r) { return r.from ? TITLE[r.from] + ' → ' + TITLE[r.to] + ': ' + r.label : TITLE[r.lane] + ': ' + r.label; }
+
+function renderSteps(rows, k) {
+  const box = document.getElementById('steps');
+  box.replaceChildren();
+  const t0 = rows.length ? Date.parse(rows[0].ts) : 0;
+  rows.forEach((r, i) => {
+    const b = h('button', 'step' + (i === k ? ' sel' : '') + (i > k ? ' future' : ''));
+    const bar = h('span', 'bar'); bar.style.background = cssVar(r.from || r.lane || 'user');
+    b.append(bar, h('span', 't', '+' + ((Date.parse(r.ts) - t0) / 1000).toFixed(1) + 's'), h('span', 'l', stepLabel(r)));
+    b.onclick = () => { live = false; stopPlay(); step = i; animateNext = false; renderAvatars(); };
+    box.append(b);
+  });
+  const sel = box.querySelector('.step.sel');
+  if (sel) sel.scrollIntoView({ block: 'nearest' });
+}
+
+/* ---------- details for the selected step ---------- */
+function section(box, title) { box.append(h('h4', '', title)); }
+function kv(box, obj) {
+  const ul = h('ul');
+  for (const [k, v] of Object.entries(obj)) if (v !== undefined && v !== null && v !== '') ul.append(h('li', '', k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : v)));
+  box.append(ul);
+}
+function textBlock(box, text) { const p = h('pre', 'block'); p.textContent = text; box.append(p); }
+function assumptionList(box, list) {
+  section(box, 'Assumptions');
+  if (!list || !list.length) { box.append(h('div', 'note sub', 'none reported')); return; }
+  const ul = h('ul'); for (const a of list) ul.append(h('li', 'note', a)); box.append(ul);
+}
+function diffBlock(f) {
+  const d = h('details', 'file'); d.open = f.status !== 'unchanged';
+  const s = h('summary');
+  s.append(h('code', '', f.path), h('span', 'badge ' + f.status, f.status));
+  if (f.status !== 'unchanged') { s.append(h('span', 'plus', '+' + f.adds), h('span', 'minus', '−' + f.dels)); }
+  d.append(s);
+  if (f.lines.length) {
+    const pre = h('pre', 'diff');
+    for (const [t, line] of f.lines) pre.append(h('span', 'ln ' + t, (t === 'add' ? '+ ' : t === 'del' ? '− ' : t === 'hdr' ? '' : '  ') + line));
+    if (f.truncated) pre.append(h('span', 'ln hdr', '… diff truncated'));
+    d.append(pre);
+  }
+  return d;
+}
+
+function renderDetails(row) {
+  const box = document.getElementById('details');
+  box.replaceChildren();
+  if (!row) { box.append(h('div', 'empty', 'Select a step.')); return; }
+  const e = row.raw || {};
+  box.append(h('h3', '', stepLabel(row)));
+  box.append(h('div', 'sub', new Date(row.ts).toLocaleTimeString([], { hour12: false }) + (e.round ? '  ·  round ' + e.round : '')));
+  switch (e.kind) {
+    case 'chat_in': section(box, 'Ticket'); textBlock(box, e.text); break;
+    case 'send':
+      if (e.type === 'Feedback') {
+        section(box, 'Feedback to the Engineer');
+        box.append(h('div', 'sub', 'Failing test names and assertion lines only, never test source.'));
+        textBlock(box, e.report || '');
+      } else {
+        section(box, 'Contract sent to the ' + e.role);
+        box.append(h('div', 'sub', 'The Engineer and Tester receive the same contract. Neither sees the other’s work.'));
+        textBlock(box, TASK && TASK.contract ? TASK.contract : '(contract not recorded for this task)');
+      }
+      break;
+    case 'submission_in': {
+      const sub = TASK && TASK.submissions.find(s => s.role === e.role && s.round === e.round);
+      section(box, e.role === 'tester' ? 'What the tests cover' : 'Reason for the change');
+      box.append(h('div', 'note', (sub ? sub.notes : e.notes) || 'no reason given'));
+      assumptionList(box, sub ? sub.assumptions : e.assumptions);
+      if (sub && sub.rejected.length) { section(box, 'Rejected paths'); const ul = h('ul'); for (const r of sub.rejected) ul.append(h('li', '', r)); box.append(ul); }
+      section(box, e.role === 'tester' ? 'Tests written' : 'Code changes');
+      if (sub) for (const f of sub.files) box.append(diffBlock(f));
+      else { box.append(h('div', 'sub', 'File contents were not saved for this task.')); kv(box, e.files); }
+      break; }
+    case 'pytest': {
+      section(box, e.exit_code === 0 ? 'All tests passed' : 'Tests failed (exit ' + e.exit_code + ')');
+      if (e.report) textBlock(box, e.report);
+      break; }
+    case 'model_call': section(box, 'Model call'); kv(box, { seconds: e.seconds, files: (e.files || []).join(', ') }); break;
+    case 'model_error': section(box, 'Model error'); textBlock(box, e.error || ''); break;
+    default: section(box, 'Event'); { const c = Object.assign({}, e); delete c.ts; delete c.kind; kv(box, c); }
+  }
+}
+
+function renderAvatars() {
+  const id = selectedTask, rows = id ? rowsFor(id) : [];
+  const created = id ? createdOf(id) : null;
+  const slider = document.getElementById('slider');
+  if (!rows.length) {
+    document.getElementById('stage').replaceChildren(h('div', 'empty', 'Select a task. Send one with: python dev_client.py "<ticket>"'));
+    document.getElementById('steps').replaceChildren(); document.getElementById('details').replaceChildren();
+    document.getElementById('pos').textContent = ''; return;
+  }
+  if (live) step = rows.length - 1;
+  step = Math.max(0, Math.min(step, rows.length - 1));
+  slider.max = rows.length - 1; slider.value = step;
+  document.getElementById('b-live').classList.toggle('on', live);
+  document.getElementById('pos').textContent = 'step ' + (step + 1) + ' / ' + rows.length;
+  renderStage(rows, step, !!created.user);
+  renderSteps(rows, step);
+  renderDetails(rows[step]);
+}
+
+/* ---------- lineage tab (sequence diagram) ---------- */
+function renderDiagram(rows) {
+  const box = document.getElementById('diagram');
+  box.replaceChildren();
+  if (!rows.length) { box.append(h('div', 'empty', 'Select a task.')); return; }
+  const W = Math.max(box.clientWidth, 720), LEFT = 92, HEAD = 46, RH = 40;
+  const span = W - LEFT - 24;
+  const X = {}; LANES.forEach((l, i) => X[l] = LEFT + span * (i + 0.5) / LANES.length);
+  const H = HEAD + rows.length * RH + 16;
+  const svg = el('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Message sequence for the selected task' });
+  const defs = el('defs');
+  for (const l of LANES) {
+    const m = el('marker', { id: 'a-' + l, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' });
+    m.append(el('path', { d: 'M0,0 L10,5 L0,10 z', fill: cssVar(l) }));
+    defs.append(m);
+  }
+  svg.append(defs);
+  for (const l of LANES) {
+    svg.append(el('text', { x: X[l], y: 22, 'text-anchor': 'middle', class: 'lane-title', style: 'fill:' + cssVar(l) }, TITLE[l]));
+    svg.append(el('line', { x1: X[l], y1: 32, x2: X[l], y2: H - 8, stroke: cssVar('line'), 'stroke-dasharray': '4 4' }));
+  }
+  let prev = null;
+  rows.forEach((r, i) => {
+    const y = HEAD + i * RH + RH / 2;
+    const g = el('g', { class: 'row' + (selectedRow === i ? ' sel' : '') });
+    g.append(el('rect', { class: 'hit', x: 0, y: y - RH / 2, width: W, height: RH, fill: 'transparent' }));
+    const t = new Date(r.ts);
+    g.append(el('text', { x: 8, y: y - 2 }, t.toLocaleTimeString([], { hour12: false })));
+    g.append(el('text', { x: 8, y: y + 11, class: 'muted' }, prev ? '+' + ((t - prev) / 1000).toFixed(1) + 's' : 'start'));
+    prev = t;
+    if (r.from) {
+      const x1 = X[r.from], x2 = X[r.to], dir = x2 > x1 ? -7 : 7;
+      g.append(el('line', { x1, y1: y, x2: x2 + dir, y2: y, stroke: cssVar(r.from), 'stroke-width': 2, 'marker-end': `url(#a-${r.from})` }));
+      g.append(el('text', { x: (x1 + x2) / 2, y: y - 6, 'text-anchor': 'middle', style: 'fill:' + (r.tone ? cssVar(r.tone) : cssVar('text')) }, r.label));
+    } else {
+      const x = X[r.lane], col = r.tone ? cssVar(r.tone) : cssVar(r.lane), left = r.lane === 'tester';
+      g.append(el('circle', { cx: x, cy: y, r: 6, fill: col }));
+      g.append(el('text', { x: x + (left ? -12 : 12), y: y + 4, 'text-anchor': left ? 'end' : 'start', style: r.tone ? 'fill:' + col : '' }, r.label));
+    }
+    g.addEventListener('click', () => {
+      selectedRow = i;
+      const d = document.getElementById('detail');
+      d.hidden = false; d.textContent = JSON.stringify(r.raw, null, 2);
+      box.querySelectorAll('g.row.sel').forEach(n => n.classList.remove('sel'));
+      g.classList.add('sel');
+    });
+    svg.append(g);
+  });
+  box.append(svg);
+}
+
+/* ---------- wiring ---------- */
+function render() {
+  renderTasks();
+  const rows = selectedTask ? rowsFor(selectedTask) : [];
+  renderSummary(selectedTask, rows);
+  if (tab === 'avatars') renderAvatars(); else renderDiagram(rows);
+}
+function selectTask(id) { selectedTask = id; selectedRow = null; live = true; stopPlay(); lastKey = ''; poll(); }
+function setTab(t) {
+  tab = t;
+  document.getElementById('tab-avatars').classList.toggle('on', t === 'avatars');
+  document.getElementById('tab-lineage').classList.toggle('on', t === 'lineage');
+  document.getElementById('view-avatars').hidden = t !== 'avatars';
+  document.getElementById('view-lineage').hidden = t !== 'lineage';
+  render();
+}
+function stopPlay() { if (timer) { clearInterval(timer); timer = null; } document.getElementById('b-play').classList.remove('on'); document.getElementById('b-play').textContent = '▶ Play'; }
+function lastIndex() { return selectedTask ? rowsFor(selectedTask).length - 1 : 0; }
+function go(delta, anim) { live = false; step = Math.max(0, Math.min(step + delta, lastIndex())); animateNext = anim; if (step === lastIndex()) live = true; renderAvatars(); }
+
+document.getElementById('tab-avatars').onclick = () => setTab('avatars');
+document.getElementById('tab-lineage').onclick = () => setTab('lineage');
+document.getElementById('b-prev').onclick = () => { stopPlay(); go(-1, false); };
+document.getElementById('b-next').onclick = () => { stopPlay(); go(1, true); };
+document.getElementById('b-live').onclick = () => { stopPlay(); live = true; animateNext = false; renderAvatars(); };
+document.getElementById('slider').oninput = e => { stopPlay(); live = false; step = +e.target.value; animateNext = false; renderAvatars(); };
+document.getElementById('b-play').onclick = () => {
+  if (timer) { stopPlay(); return; }
+  live = false; step = 0; renderAvatars();
+  const b = document.getElementById('b-play'); b.classList.add('on'); b.textContent = '❚❚ Pause';
+  timer = setInterval(() => { if (step >= lastIndex()) { stopPlay(); live = true; return; } go(1, true); }, 1300);
+};
+document.getElementById('showProgress').addEventListener('change', () => { lastKey = ''; render(); });
+window.addEventListener('resize', () => { if (tab === 'lineage') render(); });
+
+async function poll() {
+  const dot = document.getElementById('dot'), st = document.getElementById('status');
+  try {
+    const r = await fetch('/api/events', { cache: 'no-store' });
+    DATA = await r.json();
+    dot.className = 'dot on'; st.textContent = 'live';
+    const ids = taskIds();
+    if (!selectedTask || !ids.includes(selectedTask)) selectedTask = ids[0] || null;
+    TASK = null;
+    if (selectedTask) { try { const t = await fetch('/api/task/' + selectedTask, { cache: 'no-store' }); TASK = t.ok ? await t.json() : null; } catch (e) { TASK = null; } }
+    const key = DATA.events.length + ':' + selectedTask + ':' + (TASK ? TASK.submissions.length : -1);
+    if (key !== lastKey) { lastKey = key; animateNext = live; render(); }
+  } catch (e) {
+    dot.className = 'dot off'; st.textContent = 'server unreachable';
+  }
+}
+poll(); setInterval(poll, 2000);
+</script>
+</body>
+</html>

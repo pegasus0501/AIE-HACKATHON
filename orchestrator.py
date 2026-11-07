@@ -7,7 +7,6 @@ import subprocess
 import sys
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 
 from uagents import Agent, Context, Protocol
@@ -19,6 +18,7 @@ from uagents_core.contrib.protocols.chat import (
     chat_protocol_spec,
 )
 
+from events import log_event
 from messages import Feedback, Submission, TaskAssigned
 
 ALLOWED = {"engineer": ("migrations/", "queries/", "src/"), "tester": ("tests/",)}
@@ -34,12 +34,6 @@ CONVENTIONS:
 - Tests are pytest files under tests/ and run from the project root.
 - Implement exactly what the ticket states; nothing more.
 """
-
-
-def log_event(kind: str, **fields) -> None:
-    rec = {"ts": datetime.now(timezone.utc).isoformat(), "kind": kind, **fields}
-    with open(os.getenv("EVENTS_FILE", "events.jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, default=str) + "\n")
 
 
 def check_path(role: str, path: str) -> str | None:
@@ -124,6 +118,8 @@ def make_orchestrator() -> Agent:
         task_id = uuid.uuid4().hex[:8]
         st = TaskState(task_id, ticket, CONTRACT_TEMPLATE.format(ticket=ticket), user)
         tasks[task_id] = st
+        (workspace / task_id).mkdir(parents=True, exist_ok=True)
+        (workspace / task_id / "contract.txt").write_text(st.contract, encoding="utf-8")
         log_event("task_created", task_id=task_id, ticket=ticket, user=user)
         await asyncio.gather(
             *(
@@ -158,6 +154,7 @@ def make_orchestrator() -> Agent:
         log_event(
             "submission_in", sender=sender, task_id=msg.task_id, role=msg.role, round=msg.round,
             files={p: len(c) for p, c in msg.files.items()}, notes=msg.notes,
+            assumptions=msg.assumptions,
         )
         if msg.role not in role_addr or sender != role_addr[msg.role]:
             ctx.logger.warning(f"ignored Submission: sender does not match role {msg.role}")
@@ -177,6 +174,16 @@ def make_orchestrator() -> Agent:
             else:
                 good[path] = content
         st.pending[msg.role] = good
+        sub_dir = workspace / st.task_id / "submissions"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        (sub_dir / f"r{msg.round}_{msg.role}.json").write_text(
+            json.dumps({
+                "round": msg.round, "role": msg.role, "notes": msg.notes,
+                "assumptions": msg.assumptions, "files": msg.files,
+                "rejected": [r for r in st.rejected if r.split(":")[0] in msg.files],
+            }),
+            encoding="utf-8",
+        )
         await notify(ctx, st, f"{msg.role.capitalize()} submitted round {msg.round} ({len(good)} file(s)).")
         needed = {"engineer", "tester"} if st.round == 1 else {"engineer"}
         if needed <= st.pending.keys():
@@ -219,7 +226,7 @@ def make_orchestrator() -> Agent:
         await notify(ctx, st, f"Tests failed (pytest exit {code}). Sending feedback to the Engineer for round {st.round}.")
         await send_logged(
             ctx, engineer_addr, Feedback(task_id=st.task_id, round=st.round, report=report),
-            task_id=st.task_id, round=st.round, report=report,
+            task_id=st.task_id, role="engineer", round=st.round, report=report,
         )
 
     @agent.on_event("startup")

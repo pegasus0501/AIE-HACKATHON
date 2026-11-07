@@ -1,8 +1,10 @@
 import asyncio
 import os
+import time
 
 from uagents import Agent, Context
 
+from events import log_event
 from llm import SYSTEMS, call_model
 from messages import Submission, TaskAssigned
 
@@ -24,15 +26,27 @@ def make_tester() -> Agent:
     async def on_task(ctx: Context, sender: str, msg: TaskAssigned):
         if sender != orch or msg.role != "tester":
             ctx.logger.warning(f"ignored TaskAssigned from {sender[:14]}... role={msg.role}")
+            log_event("agent_ignored", agent="tester", type="TaskAssigned", sender=sender[:14], role=msg.role)
             return
+        log_event("agent_received", agent="tester", type="TaskAssigned", task_id=msg.task_id, round=msg.round)
         ctx.logger.info(f"[{msg.task_id}] writing tests from the contract")
-        out = await asyncio.to_thread(
-            call_model, "tester", SYSTEMS["tester"], f"Contract:\n{msg.contract}", msg.round
+        t0 = time.monotonic()
+        try:
+            out = await asyncio.to_thread(
+                call_model, "tester", SYSTEMS["tester"], f"Contract:\n{msg.contract}", msg.round
+            )
+        except Exception as e:
+            log_event("model_error", agent="tester", task_id=msg.task_id, round=msg.round, error=f"{type(e).__name__}: {str(e)[:300]}")
+            raise
+        log_event(
+            "model_call", agent="tester", task_id=msg.task_id, round=msg.round,
+            seconds=round(time.monotonic() - t0, 1), files=list(out["files"]),
         )
         await ctx.send(
             orch,
-            Submission(task_id=msg.task_id, role="tester", round=msg.round, files=out["files"], notes=out["notes"]),
+            Submission(task_id=msg.task_id, role="tester", round=msg.round, files=out["files"], notes=out["notes"], assumptions=out["assumptions"]),
         )
+        log_event("agent_sent", agent="tester", type="Submission", task_id=msg.task_id, round=msg.round)
 
     return agent
 
