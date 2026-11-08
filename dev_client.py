@@ -2,7 +2,7 @@
 
 Usage: python dev_client.py issues
        python dev_client.py exp1
-       python dev_client.py "Add a function add(a, b) in src/calc.py ..."
+       python dev_client.py "task: Add a function add(a, b) in src/calc.py ..."
 """
 
 import asyncio
@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 asyncio.set_event_loop(asyncio.new_event_loop())  # Python 3.14 + uagents 0.26.1
 
+from orchestrator import parse_intent  # noqa: E402
 from uagents import Agent, Context, Protocol  # noqa: E402
 from uagents_core.contrib.protocols.chat import (  # noqa: E402
     ChatAcknowledgement,
@@ -26,7 +27,7 @@ from uagents_core.contrib.protocols.chat import (  # noqa: E402
 
 PORT = int(os.getenv("DEV_CLIENT_PORT", "8005"))
 ORCH = os.environ["ORCHESTRATOR_ADDRESS"]
-TICKET = " ".join(sys.argv[1:]) or "Add a function add(a, b) in src/calc.py that returns the sum of a and b."
+TICKET = " ".join(sys.argv[1:]) or "task: Add a function add(a, b) in src/calc.py that returns the sum of a and b."
 
 client = Agent(
     name="dev_client",
@@ -42,7 +43,7 @@ chat = Protocol(spec=chat_protocol_spec)
 async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
     await ctx.send(sender, ChatAcknowledgement(acknowledged_msg_id=msg.msg_id))
     print(f"[orchestrator] {msg.text()}", flush=True)
-    is_list = TICKET.strip().lower() in ("issues", "list", "list issues", "help", "?")
+    is_list = parse_intent(TICKET)[0] in ("list", "help", "show")
     if is_list or any(isinstance(c, EndSessionContent) for c in msg.content):
         print("-- session ended --", flush=True)
         os._exit(0)

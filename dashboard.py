@@ -8,10 +8,14 @@ import difflib
 import json
 import os
 import re
+import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+import rig_bridge
 
 load_dotenv()
 HERE = Path(__file__).parent
@@ -19,6 +23,8 @@ MAX_EVENTS = 20000
 MAX_DIFF_LINES = 400
 TASK_ID = re.compile(r"^[0-9a-f]{8}$")
 ROLE_ORDER = {"engineer": 0, "tester": 1}
+QUEUE_DIR = Path(os.getenv("QUEUE_DIR", "queue"))
+MAX_BODY = 1024
 
 
 def read_events() -> list[dict]:
@@ -109,6 +115,33 @@ def build_task(task_id: str) -> dict | None:
     return {"contract": contract, "submissions": out}
 
 
+def tickets_payload(events: list[dict]) -> list[dict]:
+    """The tickets (fixed, no status) and every run made on each of them, newest first."""
+    outcome: dict[str, str] = {}
+    for e in events:
+        if e.get("kind") == "decision":
+            outcome[e["task_id"]] = {"pass": "pass", "fail_final": "fail", "timeout": "fail"}.get(e.get("outcome"), "running")
+    runs: dict[str, list] = {}
+    for e in events:
+        if e.get("kind") == "task_created" and e.get("ticket_id"):
+            runs.setdefault(e["ticket_id"], []).append(
+                {"task_id": e["task_id"], "ts": e["ts"], "outcome": outcome.get(e["task_id"], "running")})
+    return [
+        {"id": t["id"], "title": t["title"], "text": rig_bridge.ticket_text(t["id"]), "runs": list(reversed(runs.get(t["id"], [])))}
+        for t in rig_bridge.issues()
+    ]
+
+
+def queue_run(ticket_id: str) -> str:
+    """Ask the Orchestrator to start a run. It claims files from QUEUE_DIR; no chat session is involved."""
+    QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    name = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+    tmp = QUEUE_DIR / f"{name}.part"
+    tmp.write_text(json.dumps({"ticket_id": ticket_id}), encoding="utf-8")
+    tmp.rename(QUEUE_DIR / f"{name}.json")  # appears atomically; the Orchestrator only reads *.json
+    return name
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, body: bytes, ctype: str):
         self.send_response(code)
@@ -123,6 +156,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/events"):
             body = json.dumps({"events": read_events(), "agents": agent_map()}).encode()
             self._send(200, body, "application/json")
+        elif self.path.startswith("/api/tickets"):
+            self._send(200, json.dumps(tickets_payload(read_events())).encode(), "application/json")
         elif self.path.startswith("/api/task/"):
             data = build_task(self.path.split("?")[0][len("/api/task/"):])
             if data is None:
@@ -131,6 +166,27 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(data).encode(), "application/json")
         else:
             self._send(404, b"not found", "text/plain")
+
+    def do_POST(self):
+        port = int(os.getenv("DASHBOARD_PORT", "8050"))
+        own = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        origin = self.headers.get("Origin")
+        if self.path != "/api/run":
+            return self._send(404, b"not found", "text/plain")
+        if self.headers.get("Host") not in own or (origin and origin.split("//", 1)[-1] not in own):
+            return self._send(403, b'{"error":"forbidden"}', "application/json")
+        if not (self.headers.get("Content-Type") or "").startswith("application/json"):
+            return self._send(415, b'{"error":"send application/json"}', "application/json")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= MAX_BODY:
+                raise ValueError
+            ticket_id = str(json.loads(self.rfile.read(length))["ticket_id"])
+        except (ValueError, KeyError, TypeError):
+            return self._send(400, b'{"error":"expected {\\"ticket_id\\": ...}"}', "application/json")
+        if not rig_bridge.is_issue(ticket_id):
+            return self._send(404, b'{"error":"unknown ticket"}', "application/json")
+        self._send(202, json.dumps({"queued": queue_run(ticket_id), "ticket_id": ticket_id}).encode(), "application/json")
 
     def log_message(self, *args):  # keep the console quiet
         pass

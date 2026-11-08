@@ -22,3 +22,4 @@ build/
 # second-opinion runtime output
 workspace/
 events.jsonl
+queue/

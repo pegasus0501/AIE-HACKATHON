@@ -1,8 +1,10 @@
 """Meta model layer. Every call builds a fresh message list: no shared context between agents."""
 
+import hashlib
 import json
 import os
 import re
+from pathlib import Path
 
 MAX_QUERIES = 6
 NOT_SPECIFIED = "Not specified in the approved contract. Decide, and record it as an assumption."
@@ -36,9 +38,25 @@ QUERY = (
 )
 
 
+PROMPT_DIR = Path(os.getenv("PROMPT_DIR", Path(__file__).parent / "prompts"))
+
+
+def load_prompt(name: str) -> str:
+    """The editable part of a prompt lives in prompts/<name>.md; BASE is the fallback if it is missing."""
+    path = PROMPT_DIR / f"{name}.md"
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    return BASE.get(name, "")
+
+
+def prompt_hashes() -> dict:
+    """Short hash of each prompt file, logged with every task so runs can be compared."""
+    return {n: hashlib.sha256(load_prompt(n).encode()).hexdigest()[:8] for n in ("engineer", "tester", "clarifier")}
+
+
 def build_system(role: str, rig: bool = False, allow_pushback: bool = False) -> str:
-    s = BASE[role] + (PUSHBACK if allow_pushback else "") + (QUERY % MAX_QUERIES if rig else "")
-    return s + FINAL % NOTES[role]
+    s = load_prompt(role) + "\n\n" + (PUSHBACK if allow_pushback else "") + (QUERY % MAX_QUERIES if rig else "")
+    return s.strip() + FINAL % NOTES[role]
 
 
 # kept for check_models.py
@@ -185,9 +203,9 @@ def answer_questions(contract: str, questions: list[str]) -> list[str]:
     if os.getenv("STUB_LLM") == "1":
         return ["Per the approved contract: use your best judgement and state it as an assumption (stub)." for _ in questions]
     system = (
-        "You own the requirements. Answer each question using ONLY the approved contract below; quote the decision "
-        f'number when you can. If the contract does not cover it, answer exactly: "{NOT_SPECIFIED}" '
-        'Reply JSON only: {"answers": ["...", ...]} in the same order as the questions.\n\nCONTRACT:\n' + contract
+        load_prompt("clarifier")
+        + '\n\nReply JSON only: {"answers": ["...", ...]} with one answer per question, in the same order.'
+        + "\n\nAPPROVED CONTRACT:\n" + contract
     )
     user = "QUESTIONS:\n" + "\n".join(f"{i + 1}. {q}" for i, q in enumerate(questions))
     model = os.getenv("CLARIFIER_MODEL") or _model("ENGINEER")

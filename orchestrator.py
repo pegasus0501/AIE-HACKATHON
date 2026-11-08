@@ -20,14 +20,24 @@ from uagents_core.contrib.protocols.chat import (
 )
 
 from events import log_event
-from llm import answer_questions
+from llm import answer_questions, prompt_hashes
 from messages import Clarification, Feedback, PushBack, Submission, TaskAssigned
 
 ALLOWED = {"engineer": ("migrations/", "queries/", "src/"), "tester": ("tests/",)}
 SECRET_HINTS = ("KEY", "SEED", "TOKEN", "SECRET", "PASSWORD")
-LIST_WORDS = {"issues", "list", "list issues", "/issues", "help", "?"}
 ISSUE_ID = re.compile(r"\bexp\d\b", re.I)
-FILLER = re.compile(r"\b(run|start|work|on|issue|issues|and|please|the)\b|[\s,;:+&-]+", re.I)
+MENTION = re.compile(r"@agent1[a-z0-9]+", re.I)  # ASI:One prefixes every message with the agent's address
+LIST_RE = re.compile(r"\b(tickets?|issues?|available|backlog|what can you do|what do you (have|do)|menu|list)\b", re.I)
+TASK_RE = re.compile(r"^\s*task\s*:\s*(.+)$", re.I | re.S)
+FILLER = re.compile(
+    r"\b(please|run|start|work|on|the|and|go|do|now|solve|fix|handle|try|again|rerun|re-run|retry|ticket|tickets|issue|issues)\b"
+    r"|[^a-z0-9]+", re.I)
+HELP = (
+    "I run two independent agents (Engineer and Tester) on a ticket and score the result.\n"
+    "- Say 'tickets' to see the tickets.\n"
+    "- Say 'exp1' (or 'run exp2') to work on one. You can run the same ticket as often as you like.\n"
+    "- Start a message with 'task:' to give me a new task in your own words."
+)
 
 # Free-form tasks only. Rig tickets use the rig's own ticket and contract.
 CONTRACT_TEMPLATE = """\
@@ -57,15 +67,22 @@ def make_title(text: str) -> str:
     return first if len(first) <= 60 else first[:59] + "…"
 
 
-def parse_command(text: str) -> tuple[str, list[str]]:
-    """('list', []) | ('run', [ticket ids]) | ('free', [])."""
-    t = text.strip().lower()
-    if t in LIST_WORDS:
+def parse_intent(text: str) -> tuple[str, list[str]]:
+    """('task', [text]) | ('run', [ids]) | ('show', [ids]) | ('list', []) | ('help', []).
+
+    Only 'run' and 'task' start work. Questions and chatter never do.
+    """
+    t = MENTION.sub(" ", text).strip()
+    m = TASK_RE.match(t)
+    if m:
+        return "task", [m.group(1).strip()]
+    ids = list(dict.fromkeys(i.lower() for i in ISSUE_ID.findall(t)))
+    if ids:
+        leftover = FILLER.sub("", ISSUE_ID.sub("", t.lower()))
+        return ("run" if not leftover else "show"), ids
+    if LIST_RE.search(t):
         return "list", []
-    ids = list(dict.fromkeys(i.lower() for i in ISSUE_ID.findall(text)))
-    if ids and not FILLER.sub("", ISSUE_ID.sub("", t)):
-        return "run", ids
-    return "free", []
+    return "help", []
 
 
 def run_pytest(round_dir: Path, timeout: int) -> tuple[int, str]:
@@ -173,7 +190,9 @@ def make_orchestrator() -> Agent:
         (workspace / task_id).mkdir(parents=True, exist_ok=True)
         (workspace / task_id / "contract.txt").write_text(contract, encoding="utf-8")
         log_event("task_created", task_id=task_id, title=title, ticket=ticket, ticket_id=ticket_id,
-                  contract_mode=contract_mode if ticket_id else "template", user=user)
+                  contract_mode=contract_mode if ticket_id else "template", user=user,
+                  models={"engineer": os.getenv("ENGINEER_MODEL", ""), "tester": os.getenv("TESTER_MODEL", "")},
+                  prompts=prompt_hashes())
         await asyncio.gather(
             *(
                 send_logged(
@@ -193,26 +212,30 @@ def make_orchestrator() -> Agent:
         log_event("chat_in", sender=sender, text=text)
         if not text:
             return
-        kind, ids = parse_command(text)
-        if kind != "free":
-            import rig_bridge
+        kind, ids = parse_intent(text)
+        if kind == "task":
+            st = await start_task(ctx, ids[0], sender)
+            await notify(ctx, st, f"Working on it (task {st.task_id}). Engineer and Tester are starting in parallel.")
+            return
+        import rig_bridge
 
-            if kind == "list":
-                lines = [f"{i['id']}: {i['title']}" for i in rig_bridge.issues()]
-                await reply(ctx, sender, "Open issues:\n" + "\n".join(lines)
-                            + "\n\nReply with an issue id (or several, e.g. exp1 exp2) to start. "
-                              "Or describe a new task in your own words.")
-                return
+        if kind == "list":
+            lines = [f"{i['id']}: {i['title']}" for i in rig_bridge.issues()]
+            await reply(ctx, sender, "Tickets:\n" + "\n".join(lines)
+                        + "\n\nSay a ticket id (for example exp1) and I will work on it. You can run the same ticket as many times as you like.")
+        elif kind in ("run", "show"):
             bad = [i for i in ids if not rig_bridge.is_issue(i)]
             if bad:
-                await reply(ctx, sender, f"I don't have an issue called {', '.join(bad)}. Say 'issues' to list them.")
-                return
-            for tid in ids:
-                st = await start_task(ctx, "", sender, tid)
-                await notify(ctx, st, f"Working on '{st.title}' (task {st.task_id}). Engineer and Tester are starting in parallel.")
-            return
-        st = await start_task(ctx, text, sender)
-        await notify(ctx, st, f"Working on it (task {st.task_id}). Engineer and Tester are starting in parallel.")
+                await reply(ctx, sender, f"I don't have a ticket called {', '.join(bad)}. Say 'tickets' to see them.")
+            elif kind == "show":
+                body = "\n\n".join(f"{i}: {rig_bridge.title(i)}\n{rig_bridge.ticket_text(i)}" for i in ids)
+                await reply(ctx, sender, body + f"\n\nSay 'run {ids[0]}' to start.")
+            else:
+                for tid in ids:
+                    st = await start_task(ctx, "", sender, tid)
+                    await notify(ctx, st, f"Working on '{st.title}' (task {st.task_id}). Engineer and Tester are starting in parallel.")
+        else:
+            await reply(ctx, sender, HELP)
 
     @chat_proto.on_message(ChatAcknowledgement)
     async def on_ack(ctx: Context, sender: str, msg: ChatAcknowledgement):
@@ -364,18 +387,44 @@ def make_orchestrator() -> Agent:
             await notify(ctx, st, f"FAIL: no response from {', '.join(waiting) or 'an agent'} for {task_timeout}s. Giving up.",
                          final=True)
 
+    queue_dir = Path(os.getenv("QUEUE_DIR", "queue"))
+
+    @agent.on_interval(period=5.0)
+    async def poll_queue(ctx: Context):
+        """Runs requested from the dashboard. No chat session is involved."""
+        if not queue_dir.is_dir():
+            return
+        import rig_bridge
+
+        for req in sorted(queue_dir.glob("*.json")):
+            claimed = req.with_suffix(".claimed")
+            try:
+                req.rename(claimed)  # atomic: only one claimer wins
+            except OSError:
+                continue
+            try:
+                tid = json.loads(claimed.read_text(encoding="utf-8"))["ticket_id"]
+            except (ValueError, KeyError, OSError):
+                tid = ""
+            if rig_bridge.is_issue(tid):
+                log_event("queue_claimed", ticket_id=tid, request=req.name)
+                await start_task(ctx, "", None, tid)
+            else:
+                log_event("queue_rejected", request=req.name, ticket_id=tid)
+            claimed.unlink(missing_ok=True)
+
     @agent.on_event("startup")
     async def on_startup(ctx: Context):
         ctx.logger.info(f"orchestrator address: {agent.address}")
         ticket = os.getenv("STARTUP_TICKET")
         if ticket:
             await asyncio.sleep(1)
-            kind, ids = parse_command(ticket)
+            kind, ids = parse_intent(ticket)
             if kind == "run":
                 for tid in ids:
                     await start_task(ctx, "", None, tid)
-            else:
-                await start_task(ctx, ticket, None)
+            else:  # a plain startup ticket is a free-form task
+                await start_task(ctx, ids[0] if kind == "task" else ticket, None)
 
     return agent
 
