@@ -1,0 +1,846 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Second Opinion Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: issue rail | main column. Main = header card, [Agents | Lineage] tabs, then
+     Agents = stage + timeline (left) with the inspector (right). */
+  :root {
+    --bg:#f2f5f9; --panel:#ffffff; --raise:#f7f9fc; --text:#162030; --muted:#586579; --line:#dce2ec; --grid:#e9eef5; --sel:#e8effc;
+    --user:#667389; --orchestrator:#2f64d8; --engineer:#0c8f70; --tester:#8447d6;
+    --ok:#157a3b; --warn:#a85a0b; --bad:#cf2a1f; --on:#ffffff;
+    --addbg:rgba(21,122,59,.14); --delbg:rgba(207,42,31,.13); --shadow:0 1px 2px rgba(22,32,48,.06), 0 6px 18px rgba(22,32,48,.06);
+    --sans:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif; --mono:"IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#0d1118; --panel:#141a23; --raise:#192130; --text:#e6ebf3; --muted:#92a0b5; --line:#263143; --grid:#1d2635; --sel:#1b2a47;
+      --user:#a3aec2; --orchestrator:#7ba3ff; --engineer:#3fd9ae; --tester:#bb93ff;
+      --ok:#4fd37c; --warn:#f2b64a; --bad:#ff7d72; --on:#0d1118;
+      --addbg:rgba(79,211,124,.16); --delbg:rgba(255,125,114,.15); --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 22px rgba(0,0,0,.35); color-scheme:dark; }
+  }
+  :root[data-theme="dark"] {
+    --bg:#0d1118; --panel:#141a23; --raise:#192130; --text:#e6ebf3; --muted:#92a0b5; --line:#263143; --grid:#1d2635; --sel:#1b2a47;
+    --user:#a3aec2; --orchestrator:#7ba3ff; --engineer:#3fd9ae; --tester:#bb93ff;
+    --ok:#4fd37c; --warn:#f2b64a; --bad:#ff7d72; --on:#0d1118;
+    --addbg:rgba(79,211,124,.16); --delbg:rgba(255,125,114,.15); --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 22px rgba(0,0,0,.35); color-scheme:dark; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 var(--sans); }
+  button { font:inherit; color:inherit; }
+  button:focus-visible, input:focus-visible { outline:2px solid var(--orchestrator); outline-offset:2px; }
+  .app { display:grid; grid-template-columns:248px minmax(0,1fr); height:100%; }
+  .rail { background:var(--panel); border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  .brand { padding:18px 18px 14px; }
+  .brand b { display:block; font-size:15px; letter-spacing:.01em; }
+  .brand span { color:var(--muted); font-size:12px; }
+  .rail h2 { margin:6px 18px 8px; font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+  #tasks { overflow:auto; padding:0 10px 10px; display:flex; flex-direction:column; gap:4px; }
+  .task { text-align:left; border:1px solid transparent; background:transparent; border-radius:10px; padding:9px 10px; cursor:pointer; display:flex; gap:10px; align-items:flex-start; }
+  .task:hover { background:var(--grid); } .task.sel { background:var(--sel); border-color:var(--line); }
+  .task .dotc { width:9px; height:9px; border-radius:50%; margin-top:6px; flex:none; background:var(--muted); }
+  .task .dotc.pass { background:var(--ok); } .task .dotc.fail { background:var(--bad); } .task .dotc.run { background:var(--warn); animation:blink 1.4s ease-in-out infinite; }
+  .task .name { font-weight:500; line-height:1.35; }
+  .railfoot { margin-top:auto; padding:12px 18px; border-top:1px solid var(--line); color:var(--muted); font-size:12px; display:flex; align-items:center; gap:8px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); } .dot.on { background:var(--ok); } .dot.off { background:var(--bad); }
+  main { min-width:0; overflow:auto; padding:20px 24px 28px; display:flex; flex-direction:column; gap:16px; }
+  .head { display:flex; gap:16px; align-items:flex-end; justify-content:space-between; flex-wrap:wrap; }
+  .head h1 { margin:0; font-size:22px; line-height:1.25; font-weight:600; text-wrap:balance; }
+  .head .meta { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .pill { display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:2px 10px; border-radius:999px; border:1px solid var(--line); background:var(--panel); color:var(--muted); }
+  .pill b { color:var(--text); font-weight:600; font-variant-numeric:tabular-nums; }
+  .pill.pass { color:var(--ok); border-color:currentColor; } .pill.fail { color:var(--bad); border-color:currentColor; } .pill.run { color:var(--warn); border-color:currentColor; }
+  .seg { display:inline-flex; padding:3px; background:var(--grid); border-radius:10px; gap:2px; }
+  .seg button { border:0; background:transparent; padding:6px 18px; border-radius:8px; cursor:pointer; color:var(--muted); font-weight:500; }
+  .seg button.on { background:var(--panel); color:var(--text); box-shadow:var(--shadow); }
+  .agents { display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:16px; align-items:start; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); min-width:0; }
+  .bar { display:flex; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .bar button { border:1px solid var(--line); background:var(--raise); border-radius:8px; padding:4px 12px; cursor:pointer; }
+  .bar button:hover { background:var(--grid); } .bar button.on { color:var(--ok); border-color:var(--ok); }
+  .bar .now { margin-left:auto; color:var(--muted); font-size:12.5px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  svg.stage { width:100%; height:auto; display:block; }
+  svg text { font:12.5px var(--sans); fill:var(--text); } svg .mut { fill:var(--muted); } svg .mono { font-family:var(--mono); font-size:11px; }
+  svg .nm { font-weight:600; font-size:15px; } svg .ttl { font-weight:600; font-size:13px; }
+  .pulse { transform-box:fill-box; transform-origin:center; animation:pulse 1.5s ease-out infinite; }
+  @keyframes pulse { 0% { opacity:.75; transform:scale(1); } 100% { opacity:0; transform:scale(1.35); } }
+  @keyframes blink { 50% { opacity:.35; } }
+  @media (prefers-reduced-motion: reduce) { .pulse, .task .dotc.run { animation:none; } }
+  .timeline { padding:12px 14px 14px; border-top:1px solid var(--line); }
+  .tl { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .mk { width:22px; height:22px; border-radius:50%; border:0; background:var(--c); color:var(--on); font:600 11px/22px var(--sans); text-align:center; padding:0; cursor:pointer; }
+  .mk.dotted { width:12px; height:12px; margin:5px; font-size:0; }
+  .mk.future { opacity:.28; } .mk.sel { outline:2px solid var(--text); outline-offset:2px; }
+  .legend { margin-top:10px; color:var(--muted); font-size:12px; display:flex; gap:14px; flex-wrap:wrap; }
+  .legend i { display:inline-block; width:16px; height:16px; border-radius:50%; background:var(--c); color:var(--on); font:600 10px/16px var(--sans); text-align:center; font-style:normal; margin-right:5px; }
+  #details { padding:16px; position:sticky; top:0; max-height:calc(100vh - 40px); overflow:auto; }
+  #details h3 { margin:0 0 2px; font-size:15px; line-height:1.35; } #details h4 { margin:16px 0 6px; font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:600; }
+  #details ul { margin:0; padding-left:20px; } #details li { margin:2px 0; }
+  .sub { color:var(--muted); font-size:12.5px; } .note { white-space:pre-wrap; word-break:break-word; }
+  pre.block, pre.diff { background:var(--raise); border:1px solid var(--line); border-radius:8px; padding:10px; margin:0; overflow:auto; max-height:300px; font:12px/1.55 var(--mono); white-space:pre-wrap; word-break:break-word; }
+  pre.diff { padding:0; white-space:pre; word-break:normal; }
+  .ln { display:block; padding:0 10px; min-width:max-content; } .ln.add { background:var(--addbg); } .ln.del { background:var(--delbg); } .ln.hdr { color:var(--muted); }
+  details.file { margin:8px 0; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  details.file > summary { padding:6px 10px; cursor:pointer; background:var(--grid); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .badge { font-size:11px; padding:0 6px; border-radius:4px; border:1px solid currentColor; } .badge.added { color:var(--ok); } .badge.modified { color:var(--warn); } .badge.unchanged { color:var(--muted); }
+  .plus { color:var(--ok); } .minus { color:var(--bad); }
+  .qa { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin:6px 0; background:var(--raise); }
+  .qa .q { font-weight:600; } .qa .a { margin-top:4px; } .qa .a.gap { color:var(--warn); } .qa .pt { color:var(--muted); font-size:12px; margin-bottom:2px; }
+  .fail { border-left:3px solid var(--bad); padding:4px 10px; margin:6px 0; background:var(--delbg); border-radius:0 8px 8px 0; }
+  .fail .n { font-weight:600; word-break:break-word; } .fail .m { color:var(--muted); font-size:12px; word-break:break-word; }
+  table.sc { border-collapse:collapse; margin:6px 0; } table.sc td, table.sc th { padding:3px 14px 3px 0; text-align:left; font-weight:400; vertical-align:top; } table.sc th { color:var(--muted); font-size:12px; }
+  .task .name { font-weight:500; line-height:1.35; }
+  .actions { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .primary { border:0; background:var(--orchestrator); color:var(--on); font-weight:600; padding:8px 20px; border-radius:10px; cursor:pointer; }
+  .primary:hover { filter:brightness(1.08); } .primary:disabled { opacity:.55; cursor:default; }
+  .runs { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .runs button { font-size:12.5px; padding:3px 12px; border-radius:999px; border:1px solid var(--line); background:var(--panel); color:var(--muted); cursor:pointer; font-variant-numeric:tabular-nums; }
+  .runs button.on { color:var(--text); border-color:var(--text); font-weight:600; }
+  .runs .dotc { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:var(--muted); }
+  .runs .dotc.pass { background:var(--ok); } .runs .dotc.fail { background:var(--bad); } .runs .dotc.run { background:var(--warn); }
+  .runnote { color:var(--muted); font-size:12.5px; }
+  .ticketcard { padding:22px; display:flex; flex-direction:column; gap:12px; max-width:760px; }
+  .ticketcard h2 { margin:0; font-size:15px; } .ticketcard pre { margin:0; }
+  .empty { padding:40px 20px; color:var(--muted); text-align:center; }
+  .tools { display:flex; gap:16px; align-items:center; padding:10px 14px; color:var(--muted); font-size:12.5px; border-bottom:1px solid var(--line); }
+  .diagram { overflow:auto; }
+  pre#detail { margin:0; border:0; border-top:1px solid var(--line); border-radius:0 0 14px 14px; padding:12px 14px; overflow:auto; max-height:260px; font:12px/1.5 var(--mono); white-space:pre-wrap; word-break:break-word; background:var(--raise); }
+  @media (max-width:1180px) { .agents { grid-template-columns:minmax(0,1fr); } #details { position:static; max-height:none; } }
+  @media (max-width:820px) { .app { grid-template-columns:minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); height:auto; } .rail { border-right:0; border-bottom:1px solid var(--line); } #tasks { max-height:190px; } main { padding:16px; overflow:visible; } }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <aside class="rail">
+    <div class="brand"><b>Second Opinion</b><span>Orchestrator, Engineer, Tester</span></div>
+    <h2>Tickets</h2>
+    <div id="tasks"></div>
+    <div class="railfoot"><span id="dot" class="dot"></span><span id="status">connecting</span></div>
+  </aside>
+  <main>
+    <div class="head"><div><div id="headtitle"></div></div>
+      <div class="actions">
+      <span class="runnote" id="runnote"></span>
+      <button class="primary" id="b-run" title="Start a new run of this ticket">Run</button>
+      <div class="seg" role="tablist" aria-label="View">
+        <button class="on" id="tab-agents" role="tab" aria-selected="true">Agents</button>
+        <button id="tab-lineage" role="tab" aria-selected="false">Lineage</button>
+      </div>
+      </div>
+    </div>
+
+    <div id="view-ticket" class="panel ticketcard" hidden></div>
+
+    <div id="view-agents" class="agents">
+      <div class="panel">
+        <div class="bar">
+          <button id="b-prev" title="Previous step (left arrow)">&#9664; Prev</button>
+          <button id="b-play" title="Replay the issue step by step">&#9654; Replay</button>
+          <button id="b-next" title="Next step (right arrow)">Next &#9654;</button>
+          <button id="b-live" title="Follow the newest event">Live</button>
+          <span class="now" id="now"></span>
+        </div>
+        <div id="stage"></div>
+        <div class="timeline">
+          <div class="tl" id="timeline" role="group" aria-label="Steps"></div>
+          <div class="legend">
+            <span><i style="--c:var(--warn)">?</i>pushback</span><span><i style="--c:var(--ok)">A</i>answer</span>
+            <span><i style="--c:var(--engineer)">S</i>SQL on real data</span><span><i style="--c:var(--bad)">!</i>failed</span>
+            <span><i style="--c:var(--ok)">&#10003;</i>passed</span><span><i style="--c:var(--orchestrator)">#</i>score</span>
+          </div>
+        </div>
+      </div>
+      <div class="panel" id="details"></div>
+    </div>
+
+    <div id="view-lineage" class="panel" hidden>
+      <div class="tools"><label><input type="checkbox" id="showProgress"> show every progress message to the user</label></div>
+      <div class="diagram" id="diagram"></div>
+      <pre id="detail" hidden></pre>
+    </div>
+  </main>
+</div>
+
+<script>
+const LANES = ['user', 'orchestrator', 'engineer', 'tester'];
+const TITLE = { user: 'User', orchestrator: 'Orchestrator', engineer: 'Engineer', tester: 'Tester' };
+const NS = 'http://www.w3.org/2000/svg';
+const REDUCED = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+let DATA = { events: [], agents: {} }, TASK = null;
+let selectedTask = null, selectedRow = null, lastKey = '';
+let tab = 'agents', step = 0, live = true, animateNext = false, timer = null;
+
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue('--' + n).trim();
+function el(tag, attrs, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in (attrs || {})) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+function h(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+const short = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+const laneOf = a => LANES.includes(a) ? a : (DATA.agents[a] || 'user');
+const showAllProgress = () => document.getElementById('showProgress').checked;
+
+function taskIds() {
+  return DATA.events.filter(e => e.kind === 'task_created').map(e => e.task_id).reverse();
+}
+function createdOf(id) { return DATA.events.find(e => e.kind === 'task_created' && e.task_id === id); }
+function titleOf(c) { return c.title || short(c.ticket, 60); }
+const cap = w => w.charAt(0).toUpperCase() + w.slice(1);
+function firstFail(report) { const l = (report || '').split('\n').find(x => x.startsWith('FAILED')) || (report || '').split('\n')[0] || ''; return l.replace(/^FAILED\s+/, ''); }
+function failCount(report) { return (report || '').split('\n').filter(x => x.startsWith('FAILED')).length; }
+
+/* ---------- rows: one entry per event worth showing ---------- */
+function rowsFor(id) {
+  const evs = DATA.events;
+  const created = createdOf(id);
+  if (!created) return [];
+  const hasUser = !!created.user;
+  const showAll = showAllProgress();
+  const rows = [];
+  if (hasUser) {
+    const chat = evs.filter(e => e.kind === 'chat_in' && Date.parse(e.ts) <= Date.parse(created.ts)).pop();
+    if (chat) rows.push({ ts: chat.ts, from: 'user', to: 'orchestrator', label: 'issue (chat)', raw: chat });
+  }
+  rows.push({ ts: created.ts, lane: 'orchestrator', label: 'task created', raw: created });
+  const open = {};  // agent -> its currently open run of SQL queries
+  for (const e of evs.filter(x => x.task_id === id && x !== created)) {
+    const lane = e.agent || null;
+    if (lane && e.kind !== 'agent_query') open[lane] = null;
+    switch (e.kind) {
+      case 'send': {
+        const to = e.role || (e.type === 'Feedback' ? 'engineer' : laneOf(e.to));
+        rows.push({ ts: e.ts, from: 'orchestrator', to, label: e.type + (e.round ? ' r' + e.round : ''), tone: e.type === 'Clarification' ? 'ok' : e.type === 'Feedback' ? 'bad' : '', raw: e });
+        break; }
+      case 'pushback': {
+        const n = (e.items || []).length;
+        rows.push({ ts: e.ts, from: e.role, to: 'orchestrator', tone: 'warn', label: 'Pushback: ' + n + ' question' + (n === 1 ? '' : 's'), raw: e });
+        break; }
+      case 'agent_received': rows.push({ ts: e.ts, lane, label: 'received ' + e.type + ' r' + e.round, raw: e }); break;
+      case 'agent_query': {
+        let g = open[e.agent];
+        if (!g) { g = { ts: e.ts, lane: e.agent, label: '', raw: { kind: 'agent_query_group', agent: e.agent, round: e.round, queries: [], ts: e.ts } }; open[e.agent] = g; rows.push(g); }
+        g.raw.queries.push(e);
+        const n = g.raw.queries.length;
+        g.label = 'ran ' + n + ' SQL quer' + (n === 1 ? 'y' : 'ies');
+        break; }
+      case 'model_call': rows.push({ ts: e.ts, lane, label: 'model call ' + e.seconds + 's' + (e.files.length ? ', ' + e.files.length + ' file(s)' : ''), raw: e }); break;
+      case 'model_error': rows.push({ ts: e.ts, lane, tone: 'bad', label: 'model error', raw: e }); break;
+      case 'agent_sent': break;
+      case 'submission_in':
+        rows.push({ ts: e.ts, from: e.role, to: 'orchestrator', label: 'Submission r' + e.round + ' (' + Object.keys(e.files || {}).length + ' files)', raw: e });
+        break;
+      case 'path_rejected': rows.push({ ts: e.ts, lane: 'orchestrator', tone: 'warn', label: 'rejected ' + short(e.path, 24), raw: e }); break;
+      case 'pytest': rows.push({ ts: e.ts, lane: 'orchestrator', tone: e.exit_code === 0 ? 'ok' : 'bad', label: 'tests r' + e.round + ': ' + (e.exit_code === 0 ? 'passed' : 'failed'), raw: e }); break;
+      case 'decision': rows.push({ ts: e.ts, lane: 'orchestrator', tone: e.outcome === 'pass' ? 'ok' : e.outcome === 'retry' ? 'warn' : 'bad', label: 'decision: ' + e.outcome, raw: e }); break;
+      case 'score': {
+        const r = e.report || {};
+        rows.push({ ts: e.ts, lane: 'orchestrator', tone: r.catch_rate >= 1 && r.engineer_passes_hidden_tests ? 'ok' : 'warn', label: 'score: caught ' + r.caught + '/' + r.total, raw: e });
+        break; }
+      case 'progress': {
+        const t = e.text || '';
+        const key = /^(PASS|FAIL)/.test(t) || /^Working on/.test(t);
+        if (hasUser && (key || showAll)) rows.push({ ts: e.ts, from: 'orchestrator', to: 'user', label: short(t, 38), tone: /^PASS/.test(t) ? 'ok' : /^FAIL/.test(t) ? 'bad' : '', raw: e });
+        break; }
+    }
+  }
+  rows.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+  return rows;
+}
+
+function outcomeOf(id) {
+  const d = DATA.events.filter(e => e.kind === 'decision' && e.task_id === id);
+  const last = d[d.length - 1];
+  if (!last) return 'running';
+  return last.outcome === 'pass' ? 'pass' : (last.outcome === 'fail_final' || last.outcome === 'timeout') ? 'fail' : 'running';
+}
+const chipClass = o => o === 'pass' ? 'pass' : o === 'fail' ? 'fail' : 'run';
+
+/* ---------- what each agent is doing at step k ---------- */
+function stateAt(rows, k, hasUser) {
+  const S = { user: { t: hasUser ? 'Waiting for the result' : 'No chat user (queued task)' }, orchestrator: { t: 'Idle' }, engineer: { t: 'Idle' }, tester: { t: 'Idle' } };
+  let got = new Set(), round = 1;
+  for (let i = 0; i <= k && i < rows.length; i++) {
+    const e = rows[i].raw || {};
+    switch (e.kind) {
+      case 'chat_in': S.user = { t: 'Sent the issue' }; S.orchestrator = { t: 'Received the issue', busy: true }; break;
+      case 'task_created': S.orchestrator = { t: 'Giving both agents the requirement', busy: true }; break;
+      case 'send':
+        if (e.type === 'Feedback') {
+          round = e.round; got = new Set();
+          S.orchestrator = { t: 'Sent feedback, waiting for the Engineer', busy: true };
+          S.engineer = { t: 'Feedback on its way', busy: true, bubble: { text: firstFail(e.report), tone: 'bad', mark: '!' } };
+        } else if (e.type === 'Clarification') {
+          const a = (e.answers || [])[0];
+          S.orchestrator = { t: 'Answered the ' + e.role + ' from the contract', busy: true, bubble: a ? { text: a.answer, tone: /^Not specified/.test(a.answer) ? 'warn' : 'ok', mark: 'A' } : null };
+          S[e.role] = { t: 'Answers on their way', busy: true };
+        } else {
+          S[e.role] = { t: 'Task on its way', busy: true };
+          S.orchestrator = { t: 'Waiting for Engineer and Tester', busy: true };
+        }
+        break;
+      case 'agent_received':
+        S[e.agent] = { t: e.type === 'Clarification' ? 'Reading the answers, now writing' : e.agent === 'tester' ? 'Reading the requirement' : e.type === 'Feedback' ? 'Reading feedback, fixing the code' : 'Reading the requirement', busy: true };
+        break;
+      case 'agent_query_group': {
+        const q = e.queries[e.queries.length - 1];
+        S[e.agent] = { t: 'Inspecting the real data (' + e.queries.length + ' SQL quer' + (e.queries.length === 1 ? 'y' : 'ies') + ')', busy: true, bubble: { text: q.sql, tone: 'info', mark: 'SQL' } };
+        break; }
+      case 'pushback': {
+        const qs = (e.items || []).map(x => x.question);
+        S[e.role] = { t: 'Pushed back: ' + qs.length + ' question' + (qs.length === 1 ? '' : 's') + ', waiting', tone: 'warn', bubble: { text: qs[0] || '', tone: 'warn', mark: '?' } };
+        S.orchestrator = { t: 'Answering the ' + e.role + ' from the contract', busy: true };
+        break; }
+      case 'model_call': S[e.agent] = { t: 'Model answered in ' + e.seconds + 's, sending files', busy: true }; break;
+      case 'model_error': S[e.agent] = { t: 'Model error', tone: 'bad' }; break;
+      case 'submission_in': {
+        got.add(e.role);
+        S[e.role] = { t: 'Delivered round ' + e.round + ', waiting for the verdict' };
+        const need = round === 1 ? 2 : 1;
+        S.orchestrator = got.size >= need ? { t: 'Running the tests', busy: true } : { t: 'Waiting for the other agent', busy: true };
+        break; }
+      case 'pytest': {
+        const n = failCount(e.report);
+        S.orchestrator = { t: e.exit_code === 0 ? 'Tests passed, deciding' : 'Tests failed, deciding', busy: true, tone: e.exit_code === 0 ? 'ok' : 'bad',
+          bubble: e.exit_code === 0 ? null : { text: (n ? n + ' failing: ' : '') + firstFail(e.report), tone: 'bad', mark: '!' } };
+        break; }
+      case 'decision':
+        if (e.outcome === 'pass') {
+          S.orchestrator = { t: 'PASS', tone: 'ok' }; S.engineer = { t: 'Done', tone: 'ok' }; S.tester = { t: 'Done', tone: 'ok' };
+          if (hasUser) S.user = { t: 'Got the result' };
+        } else if (e.outcome === 'fail_final' || e.outcome === 'timeout') {
+          S.orchestrator = { t: e.outcome === 'timeout' ? 'FAIL: an agent went silent' : 'FAIL after ' + e.round + ' round(s)', tone: 'bad' }; S.engineer = { t: 'Gave up', tone: 'bad' }; S.tester = { t: 'Done' };
+        } else S.orchestrator = { t: 'Deciding to retry', busy: true, tone: 'warn' };
+        break;
+      case 'score': {
+        const r = e.report || {};
+        S.orchestrator = { t: 'Scored: caught ' + r.caught + '/' + r.total, tone: r.catch_rate >= 1 ? 'ok' : 'warn',
+          bubble: { text: 'Tester caught ' + r.caught + '/' + r.total + ', ' + (r.false_alarms || []).length + ' false alarms. Engineer hidden tests: ' + (r.engineer_passes_hidden_tests ? 'pass' : 'fail'), tone: r.catch_rate >= 1 ? 'ok' : 'warn', mark: '#' } };
+        break; }
+    }
+  }
+  return S;
+}
+
+
+/* ---------- ticket rail + header ---------- */
+let TICKETS = [], selectedTicket = null, runCount = {};
+const $ = id => document.getElementById(id);
+function scoreOf(id) { const e = DATA.events.filter(x => x.kind === 'score' && x.task_id === id).pop(); return e ? e.report : null; }
+function currentTicket() { return TICKETS.find(t => t.id === selectedTicket) || null; }
+
+function renderTasks() {
+  const box = $('tasks');
+  box.replaceChildren();
+  if (!TICKETS.length) { box.append(h('div', 'empty', 'No tickets found.')); return; }
+  for (const t of TICKETS) {
+    const b = h('button', 'task' + (t.id === selectedTicket ? ' sel' : ''));
+    b.append(h('span', 'name', t.title));
+    b.onclick = () => selectTicket(t.id);
+    box.append(b);
+  }
+}
+
+function renderHead(id, rows) {
+  const box = $('headtitle');
+  box.replaceChildren();
+  const tk = currentTicket();
+  if (!tk) { box.append(h('h1', '', 'No ticket selected')); return; }
+  box.append(h('h1', '', tk.title));
+  const runs = h('div', 'runs');
+  if (!tk.runs.length) runs.append(h('span', 'runnote', 'never run'));
+  tk.runs.forEach((r, i) => {
+    const b = h('button', r.task_id === id ? 'on' : '');
+    b.append(h('span', 'dotc ' + chipClass(r.outcome)), document.createTextNode('Run ' + (tk.runs.length - i) + '  ' + new Date(r.ts).toLocaleTimeString([], { hour12: false })));
+    b.title = r.outcome === 'running' ? 'running' : r.outcome === 'pass' ? 'passed' : 'failed';
+    b.onclick = () => selectRun(r.task_id);
+    runs.append(b);
+  });
+  box.append(runs);
+  if (!id) return;
+  const o = outcomeOf(id), sc = scoreOf(id);
+  const rounds = Math.max(1, ...DATA.events.filter(e => e.task_id === id && e.round).map(e => e.round));
+  const span = rows.length > 1 ? Math.round((Date.parse(rows[rows.length - 1].ts) - Date.parse(rows[0].ts)) / 1000) + 's' : '-';
+  const m = h('div', 'meta');
+  const add = (cls, label, val) => { const p = h('span', 'pill ' + cls); if (val === undefined) p.textContent = label; else { p.append(document.createTextNode(label + ' '), h('b', '', val)); } m.append(p); };
+  add(chipClass(o), o === 'running' ? 'running' : o === 'pass' ? 'passed' : 'failed');
+  add('', 'rounds', String(rounds)); add('', 'elapsed', span);
+  if (sc) { add('', 'Tester caught', sc.caught + '/' + sc.total); add('', 'false alarms', String((sc.false_alarms || []).length)); add('', 'Engineer hidden tests', sc.engineer_passes_hidden_tests ? 'pass' : 'fail'); }
+  box.append(m);
+}
+
+function renderTicketCard() {
+  const box = $('view-ticket'), tk = currentTicket();
+  box.replaceChildren();
+  if (!tk) return;
+  box.append(h('h2', '', 'Ticket'), textBlock2(tk.text), h('div', 'sub', 'This ticket has not been run yet. Press Run and the Engineer and Tester start working on it.'));
+}
+function textBlock2(text) { const p = h('pre', 'block'); p.textContent = text; return p; }
+
+/* ---------- stage: who is assigned what, and what is happening ---------- */
+const NODE = {
+  user: { x: 20, y: 64, w: 220, h: 90 }, orchestrator: { x: 345, y: 24, w: 310, h: 170 },
+  engineer: { x: 40, y: 320, w: 300, h: 170 }, tester: { x: 660, y: 320, w: 300, h: 170 },
+};
+const INFO = {
+  user: { name: 'You', role: 'raises the issue', chips: [] },
+  orchestrator: { name: 'Orchestrator', role: 'assigns the work and decides', chips: ['assigns', 'answers', 'runs tests', 'decides'] },
+  engineer: { name: 'Engineer', role: 'writes the change', label: 'writes', chips: ['migrations/', 'queries/', 'src/'] },
+  tester: { name: 'Tester', role: 'writes the tests', label: 'writes', chips: ['tests/'] },
+};
+const CURVE = { // from the first role to the second; the reverse swaps endpoints
+  'orchestrator>engineer': [430, 194, 430, 262, 190, 262, 190, 320], 'orchestrator>tester': [570, 194, 570, 262, 810, 262, 810, 320],
+  'user>orchestrator': [240, 109, 240, 109, 345, 109, 345, 109],
+};
+function curveD(a, b) {
+  const f = CURVE[a + '>' + b], r = CURVE[b + '>' + a];
+  if (f) return `M${f[0]},${f[1]} C${f[2]},${f[3]} ${f[4]},${f[5]} ${f[6]},${f[7]}`;
+  return `M${r[6]},${r[7]} C${r[4]},${r[5]} ${r[2]},${r[3]} ${r[0]},${r[1]}`;
+}
+function curveMid(a, b) { const c = CURVE[a + '>' + b] || CURVE[b + '>' + a]; return [(c[0] + 3 * c[2] + 3 * c[4] + c[6]) / 8, (c[1] + 3 * c[3] + 3 * c[5] + c[7]) / 8]; }
+
+function drawAvatar(g, role, cx, cy, st) {
+  const col = cssVar(role);
+  const a = el('g', { transform: `translate(${cx},${cy})` });
+  if (st.busy) a.append(el('circle', { r: 33, fill: 'none', stroke: col, 'stroke-width': 2.5, class: 'pulse' }));
+  a.append(el('circle', { r: 28, fill: col, 'fill-opacity': 0.16, stroke: col, 'stroke-width': 2 }));
+  if (role === 'user') {
+    a.append(el('circle', { cx: 0, cy: -6, r: 8, fill: col }));
+    a.append(el('path', { d: 'M-15,19 Q0,2 15,19 Z', fill: col }));
+  } else {
+    a.append(el('rect', { x: -14, y: -11, width: 28, height: 22, rx: 7, fill: cssVar('panel'), stroke: col, 'stroke-width': 2.2 }));
+    a.append(el('circle', { cx: -5, cy: -2, r: 2.4, fill: col })); a.append(el('circle', { cx: 5, cy: -2, r: 2.4, fill: col }));
+    const mouth = st.tone === 'ok' ? 'M-5,4 Q0,8.5 5,4' : st.tone === 'bad' ? 'M-5,7 Q0,2.5 5,7' : 'M-4,5.5 L4,5.5';
+    a.append(el('path', { d: mouth, fill: 'none', stroke: col, 'stroke-width': 2, 'stroke-linecap': 'round' }));
+    if (role === 'orchestrator') { a.append(el('line', { x1: 0, y1: -11, x2: 0, y2: -18, stroke: col, 'stroke-width': 2 })); a.append(el('circle', { cx: 0, cy: -20, r: 2.6, fill: col })); }
+    if (role === 'engineer') { a.append(el('path', { d: 'M-15,-11 Q0,-29 15,-11 Z', fill: col })); a.append(el('rect', { x: -18, y: -12.5, width: 36, height: 3.6, rx: 1.8, fill: col })); }
+    if (role === 'tester') { a.append(el('circle', { cx: 13, cy: 11, r: 6.5, fill: cssVar('panel'), stroke: col, 'stroke-width': 2.2 })); a.append(el('line', { x1: 18, y1: 16, x2: 23, y2: 21, stroke: col, 'stroke-width': 2.6, 'stroke-linecap': 'round' })); }
+  }
+  g.append(a);
+}
+
+function nodeCard(role, st, model) {
+  const n = NODE[role], info = INFO[role], col = cssVar(role);
+  const g = el('g', { transform: `translate(${n.x},${n.y})` });
+  const edge = st.tone ? cssVar(st.tone) : cssVar('line');
+  g.append(el('rect', { width: n.w, height: n.h, rx: 14, fill: cssVar('panel'), stroke: edge, 'stroke-width': st.tone ? 2 : 1.5 }));
+  drawAvatar(g, role, 46, 46, st);
+  const compact = role === 'user';
+  g.append(el('text', { x: 86, y: compact ? 40 : 40, class: 'nm', style: 'fill:' + col }, info.name));
+  g.append(el('text', { x: 86, y: 58, class: 'mut' }, info.role));
+  if (model) g.append(el('text', { x: 86, y: 75, class: 'mono mut' }, short(model, 30)));
+  const busyCol = st.tone ? cssVar(st.tone) : st.busy ? col : cssVar('muted');
+  if (compact) {
+    g.append(el('text', { x: 86, y: 78, class: 'mut', style: 'font-size:12px' }, short(st.t, 28)));
+    return g;
+  }
+  g.append(el('line', { x1: 14, y1: 90, x2: n.w - 14, y2: 90, stroke: cssVar('line') }));
+  g.append(el('circle', { cx: 22, cy: 108, r: 5, fill: busyCol, class: st.busy ? 'pulse' : '' }));
+  wrapText(st.t, 38).slice(0, 2).forEach((ln, i) => g.append(el('text', { x: 36, y: 112 + i * 16, style: 'font-weight:500' }, ln)));
+  let x = 14; const y = n.h - 34;
+  if (info.label) { g.append(el('text', { x, y: y + 15, class: 'mut', style: 'font-size:11px' }, info.label)); x += 42; }
+  for (const c of info.chips) {
+    const w = c.length * 6.2 + 16;
+    g.append(el('rect', { x, y, width: w, height: 22, rx: 11, fill: cssVar('raise'), stroke: cssVar('line') }));
+    g.append(el('text', { x: x + w / 2, y: y + 15, 'text-anchor': 'middle', class: 'mono mut' }, c));
+    x += w + 6;
+  }
+  return g;
+}
+
+function wrapText(text, n) {
+  const words = String(text || '').split(/\s+/), lines = [''];
+  for (const w of words) { if ((lines[lines.length - 1] + ' ' + w).trim().length > n) lines.push(w); else lines[lines.length - 1] = (lines[lines.length - 1] + ' ' + w).trim(); }
+  return lines;
+}
+
+function callout(role, b) {
+  const col = cssVar(b.tone === 'info' ? role : b.tone);
+  const n = NODE[role], wide = role === 'orchestrator';
+  const w = wide ? 304 : n.w;
+  const raw = wrapText(b.text, wide ? 42 : 40), lines = raw.slice(0, 3);
+  if (raw.length > 3) lines[2] = short(lines[2] + ' ' + raw.slice(3).join(' '), 42);
+  const hgt = 18 + lines.length * 16;
+  const x = wide ? 676 : n.x, y = wide ? 40 : n.y + n.h + 16;
+  const g = el('g', { transform: `translate(${x},${y})` });
+  if (!wide) g.append(el('path', { d: `M${w / 2 - 8},0 L${w / 2},-9 L${w / 2 + 8},0 Z`, fill: cssVar('panel'), stroke: col, 'stroke-width': 2 }));
+  g.append(el('rect', { width: w, height: hgt, rx: 10, fill: cssVar('panel'), stroke: col, 'stroke-width': 2 }));
+  if (!wide) g.append(el('rect', { x: w / 2 - 7, y: -1, width: 14, height: 4, fill: cssVar('panel') }));
+  const mk = b.mark || '', bw = mk.length > 1 ? 30 : 20;
+  g.append(el('rect', { x: 8, y: 8, width: bw, height: 20, rx: 10, fill: col }));
+  g.append(el('text', { x: 8 + bw / 2, y: 22, 'text-anchor': 'middle', style: 'fill:' + cssVar('on') + ';font-weight:700;font-size:11px' }, mk));
+  lines.forEach((ln, i) => g.append(el('text', { x: 14 + bw + 6, y: 22 + i * 16 }, ln)));
+  return g;
+}
+
+function renderStage(rows, k, created) {
+  const box = document.getElementById('stage');
+  box.replaceChildren();
+  const hasUser = !!created.user, models = created.models || {};
+  const svg = el('svg', { class: 'stage', viewBox: '0 0 1000 590', role: 'img', 'aria-label': 'The Orchestrator assigns work to the Engineer and the Tester, who never talk to each other' });
+  const defs = el('defs');
+  for (const l of LANES) {
+    const m = el('marker', { id: 'ar-' + l, viewBox: '0 0 10 10', refX: 8, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' });
+    m.append(el('path', { d: 'M0,0 L10,5 L0,10 z', fill: cssVar(l) }));
+    defs.append(m);
+  }
+  svg.append(defs);
+  const links = [['orchestrator', 'engineer'], ['orchestrator', 'tester']];
+  if (hasUser) links.unshift(['user', 'orchestrator']);
+  for (const [a, b] of links) svg.append(el('path', { d: curveD(a, b), fill: 'none', stroke: cssVar('line'), 'stroke-width': 2.5 }));
+  // the two agents never talk to each other
+  svg.append(el('line', { x1: 342, y1: 405, x2: 658, y2: 405, stroke: cssVar('bad'), 'stroke-opacity': 0.5, 'stroke-dasharray': '6 6', 'stroke-width': 2 }));
+  svg.append(el('text', { x: 500, y: 396, 'text-anchor': 'middle', class: 'mut', style: 'font-size:12px' }, 'isolated: no direct channel'));
+  svg.append(el('text', { x: 200, y: 296, class: 'mut', style: 'font-size:11.5px' }, 'assigns the change, answers questions'));
+  svg.append(el('text', { x: 200, y: 311, class: 'mut', style: 'font-size:11.5px' }, 'receives code and questions'));
+  svg.append(el('text', { x: 800, y: 296, 'text-anchor': 'end', class: 'mut', style: 'font-size:11.5px' }, 'assigns the tests, answers questions'));
+  svg.append(el('text', { x: 800, y: 311, 'text-anchor': 'end', class: 'mut', style: 'font-size:11.5px' }, 'receives tests and questions'));
+  // most recent message on the wire
+  let last = -1;
+  for (let i = Math.min(k, rows.length - 1); i >= 0; i--) if (rows[i].from) { last = i; break; }
+  if (last >= 0) {
+    const r = rows[last], d = curveD(r.from, r.to);
+    svg.append(el('path', { d, fill: 'none', stroke: cssVar(r.from), 'stroke-width': 3.5, 'marker-end': `url(#ar-${r.from})` }));
+    const [mx, my] = curveMid(r.from, r.to);
+    const text = short(r.label, r.from === 'user' || r.to === 'user' ? 12 : 30), tw = text.length * 6.6 + 20;
+    const lab = el('g', { transform: `translate(${mx},${my})` });
+    lab.append(el('rect', { x: -tw / 2, y: -12, width: tw, height: 24, rx: 12, fill: cssVar('panel'), stroke: cssVar(r.from), 'stroke-width': 1.5 }));
+    lab.append(el('text', { x: 0, y: 4.5, 'text-anchor': 'middle' }, text));
+    svg.append(lab);
+    if (animateNext && !REDUCED && last === k) {
+      const env = el('g');
+      env.append(el('rect', { x: -12, y: -8, width: 24, height: 16, rx: 3, fill: cssVar(r.from) }));
+      env.append(el('path', { d: 'M-12,-8 L0,2 L12,-8', fill: 'none', stroke: cssVar('on'), 'stroke-width': 1.6 }));
+      env.append(el('animateMotion', { dur: '0.9s', fill: 'freeze', path: d }));
+      svg.append(env);
+    }
+  }
+  const S = stateAt(rows, k, hasUser);
+  for (const l of LANES) if (l !== 'user' || hasUser) svg.append(nodeCard(l, S[l], models[l]));
+  for (const l of LANES) if (S[l].bubble && S[l].bubble.text && l !== 'user') svg.append(callout(l, S[l].bubble));
+  box.append(svg);
+  animateNext = false;
+}
+
+/* ---------- timeline ---------- */
+function stepLabel(r) { return r.from ? TITLE[r.from] + ' → ' + TITLE[r.to] + ': ' + r.label : TITLE[r.lane] + ': ' + r.label; }
+
+function markerOf(r) {
+  const e = r.raw || {};
+  if (e.kind === 'pushback') return { g: '?', c: 'var(--warn)' };
+  if (e.kind === 'send' && e.type === 'Clarification') return { g: 'A', c: (e.answers || []).some(a => /^Not specified/.test(a.answer)) ? 'var(--warn)' : 'var(--ok)' };
+  if (e.kind === 'agent_query_group') return { g: 'S', c: 'var(--' + e.agent + ')' };
+  if (e.kind === 'pytest') return e.exit_code === 0 ? { g: '✓', c: 'var(--ok)' } : { g: '!', c: 'var(--bad)' };
+  if (e.kind === 'decision') return e.outcome === 'pass' ? { g: '✓', c: 'var(--ok)' } : e.outcome === 'retry' ? { g: '', c: 'var(--warn)', dot: true } : { g: '!', c: 'var(--bad)' };
+  if (e.kind === 'score') return { g: '#', c: 'var(--orchestrator)' };
+  if (e.kind === 'model_error') return { g: '!', c: 'var(--bad)' };
+  return { g: '', c: 'var(--' + (r.from || r.lane || 'user') + ')', dot: true };
+}
+
+function renderTimeline(rows, k) {
+  const box = document.getElementById('timeline');
+  box.replaceChildren();
+  const t0 = rows.length ? Date.parse(rows[0].ts) : 0;
+  rows.forEach((r, i) => {
+    const m = markerOf(r);
+    const b = h('button', 'mk' + (m.dot ? ' dotted' : '') + (i === k ? ' sel' : '') + (i > k ? ' future' : ''), m.g);
+    b.style.setProperty('--c', m.c);
+    const t = '+' + ((Date.parse(r.ts) - t0) / 1000).toFixed(1) + 's  ' + stepLabel(r);
+    b.title = t; b.setAttribute('aria-label', t);
+    b.onclick = () => { live = false; stopPlay(); step = i; animateNext = false; renderAgents(); };
+    box.append(b);
+  });
+}
+
+function renderAgents() {
+  const id = selectedTask, rows = id ? rowsFor(id) : [];
+  const created = id ? createdOf(id) : null;
+  if (!rows.length) {
+    document.getElementById('stage').replaceChildren(h('div', 'empty', 'Pick an issue on the left, or message the Orchestrator with: issues'));
+    document.getElementById('timeline').replaceChildren(); document.getElementById('details').replaceChildren();
+    document.getElementById('now').textContent = ''; return;
+  }
+  if (live) step = rows.length - 1;
+  step = Math.max(0, Math.min(step, rows.length - 1));
+  document.getElementById('b-live').classList.toggle('on', live);
+  document.getElementById('now').textContent = 'step ' + (step + 1) + ' of ' + rows.length + '  ·  ' + stepLabel(rows[step]);
+  renderStage(rows, step, created);
+  renderTimeline(rows, step);
+  renderDetails(rows[step]);
+}
+
+/* ---------- details for the selected step ---------- */
+function section(box, title) { box.append(h('h4', '', title)); }
+function kv(box, obj) {
+  const ul = h('ul');
+  for (const [k, v] of Object.entries(obj)) if (v !== undefined && v !== null && v !== '') ul.append(h('li', '', k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : v)));
+  box.append(ul);
+}
+function textBlock(box, text) { const p = h('pre', 'block'); p.textContent = text; box.append(p); }
+function assumptionList(box, list) {
+  section(box, 'Assumptions');
+  if (!list || !list.length) { box.append(h('div', 'note sub', 'none reported')); return; }
+  const ul = h('ul'); for (const a of list) ul.append(h('li', 'note', a)); box.append(ul);
+}
+function diffBlock(f) {
+  const d = h('details', 'file'); d.open = f.status !== 'unchanged';
+  const s = h('summary');
+  s.append(h('code', '', f.path), h('span', 'badge ' + f.status, f.status));
+  if (f.status !== 'unchanged') { s.append(h('span', 'plus', '+' + f.adds), h('span', 'minus', '−' + f.dels)); }
+  d.append(s);
+  if (f.lines.length) {
+    const pre = h('pre', 'diff');
+    for (const [t, line] of f.lines) pre.append(h('span', 'ln ' + t, (t === 'add' ? '+ ' : t === 'del' ? '− ' : t === 'hdr' ? '' : '  ') + line));
+    if (f.truncated) pre.append(h('span', 'ln hdr', '… diff truncated'));
+    d.append(pre);
+  }
+  return d;
+}
+
+function qaCards(box, pairs) {
+  for (const p of pairs) {
+    const c = h('div', 'qa');
+    if (p.point) c.append(h('div', 'pt', p.point));
+    c.append(h('div', 'q', p.question));
+    if (p.answer !== undefined) {
+      const gap = /^Not specified/.test(p.answer);
+      c.append(h('div', 'a' + (gap ? ' gap' : ''), (gap ? 'The contract does not cover this, the agent must decide: ' : 'Answer: ') + p.answer));
+    }
+    box.append(c);
+  }
+}
+function failureList(box, report) {
+  const lines = (report || '').split('\n').filter(Boolean);
+  if (!lines.length) { box.append(h('div', 'note sub', 'no details reported')); return; }
+  for (const ln of lines) {
+    if (ln.startsWith('FAILED ')) {
+      const body = ln.slice(7), at = body.indexOf(': ');
+      const f = h('div', 'fail');
+      f.append(h('div', 'n', at < 0 ? body : body.slice(0, at)));
+      if (at >= 0) f.append(h('div', 'm', body.slice(at + 2)));
+      box.append(f);
+    } else box.append(h('div', 'note sub', ln));
+  }
+}
+function scoreCard(box, r) {
+  const t = h('table', 'sc');
+  const rows = [['Tester caught', r.caught + ' of ' + r.total + ' planted problems (' + Math.round(r.catch_rate * 100) + '%)'],
+    ['False alarms', (r.false_alarms || []).length + ' (tests that fail on the correct solution)'],
+    ['Tester suite passes on the reference', r.tester_suite_passes_on_reference ? 'yes' : 'no'],
+    ['Engineer passes the hidden tests', r.engineer_passes_hidden_tests ? 'yes' : 'no']];
+  for (const [k, v] of rows) { const tr = h('tr'); tr.append(h('th', '', k), h('td', '', v)); t.append(tr); }
+  box.append(t);
+  section(box, 'By tier');
+  const t2 = h('table', 'sc');
+  for (const [tier, v] of Object.entries(r.catch_rate_by_tier || {})) { const tr = h('tr'); tr.append(h('th', '', tier), h('td', '', v.caught + ' / ' + v.total)); t2.append(tr); }
+  box.append(t2);
+  section(box, 'Planted problems');
+  const ul = h('ul');
+  for (const l of r.landmines || []) ul.append(h('li', '', l.id + ' (' + l.tier + '): ' + (l.caught ? 'caught' : 'missed')));
+  box.append(ul);
+  if ((r.engineer_hidden_failures || []).length) { section(box, 'Hidden tests the Engineer failed'); const u = h('ul'); for (const n of r.engineer_hidden_failures) u.append(h('li', '', n)); box.append(u); }
+}
+
+function renderDetails(row) {
+  const box = document.getElementById('details');
+  box.replaceChildren();
+  if (!row) { box.append(h('div', 'empty', 'Select a step.')); return; }
+  const e = row.raw || {};
+  box.append(h('h3', '', stepLabel(row)));
+  box.append(h('div', 'sub', new Date(row.ts).toLocaleTimeString([], { hour12: false }) + (e.round ? '  ·  round ' + e.round : '')));
+  switch (e.kind) {
+    case 'chat_in': section(box, 'What the user said'); textBlock(box, e.text); break;
+    case 'task_created': section(box, 'Issue'); textBlock(box, e.ticket); if (e.contract_mode) box.append(h('div', 'sub', 'Contract mode: ' + e.contract_mode)); break;
+    case 'pushback':
+      section(box, cap(e.role) + ' refuses to guess');
+      box.append(h('div', 'sub', 'These questions about the requirement went to the Orchestrator. The agent waits for answers before writing anything.'));
+      qaCards(box, e.items || []);
+      break;
+    case 'send':
+      if (e.type === 'Clarification') {
+        section(box, 'Answers from the approved contract');
+        box.append(h('div', 'sub', 'The Orchestrator answers only from the contract. Where the contract is silent, the agent must decide and record an assumption.'));
+        qaCards(box, e.answers || []);
+      } else if (e.type === 'Feedback') {
+        section(box, 'Why the Engineer has to try again');
+        box.append(h('div', 'sub', 'Failing test names and assertion lines only, never test source.'));
+        failureList(box, e.report);
+      } else {
+        section(box, 'Requirement given to the ' + e.role);
+        box.append(h('div', 'sub', 'Both agents get the same requirement. Neither sees the other’s work.'));
+        textBlock(box, TASK && TASK.contract ? TASK.contract : '(requirement not recorded for this task)');
+      }
+      break;
+    case 'agent_query_group':
+      section(box, 'SQL the ' + e.agent + ' ran against the real data');
+      for (const q of e.queries) { textBlock(box, q.sql); const r = h('pre', 'block'); r.textContent = q.result || ''; r.style.opacity = '.8'; r.style.marginTop = '4px'; box.append(r); box.append(h('div', '', '')); }
+      break;
+    case 'submission_in': {
+      const sub = TASK && TASK.submissions.find(s => s.role === e.role && s.round === e.round);
+      section(box, e.role === 'tester' ? 'What the tests cover' : 'Reason for the change');
+      box.append(h('div', 'note', (sub ? sub.notes : e.notes) || 'no reason given'));
+      assumptionList(box, sub ? sub.assumptions : e.assumptions);
+      const doubts = (sub ? sub.pushback : e.pushback) || [];
+      if (doubts.length) { section(box, 'Doubts it proceeded despite'); qaCards(box, doubts); }
+      if (sub && sub.rejected.length) { section(box, 'Rejected paths'); const ul = h('ul'); for (const r of sub.rejected) ul.append(h('li', '', r)); box.append(ul); }
+      section(box, e.role === 'tester' ? 'Tests written' : 'Code changes');
+      if (sub) for (const f of sub.files) box.append(diffBlock(f));
+      else { box.append(h('div', 'sub', 'File contents were not saved for this task.')); kv(box, e.files); }
+      break; }
+    case 'pytest':
+      section(box, e.exit_code === 0 ? 'All tests passed' : 'How it failed');
+      if (e.exit_code !== 0) failureList(box, e.report);
+      break;
+    case 'score': section(box, 'Score from the experiment rig'); scoreCard(box, e.report || e); break;
+    case 'model_call': section(box, 'Model call'); kv(box, { seconds: e.seconds, 'SQL queries': e.queries, files: (e.files || []).join(', ') }); break;
+    case 'model_error': section(box, 'Model error'); textBlock(box, e.error || ''); break;
+    default: section(box, 'Event'); { const c = Object.assign({}, e); delete c.ts; delete c.kind; kv(box, c); }
+  }
+}
+
+/* ---------- lineage tab (sequence diagram) ---------- */
+function renderDiagram(rows) {
+  const box = document.getElementById('diagram');
+  box.replaceChildren();
+  if (!rows.length) { box.append(h('div', 'empty', 'Select a task.')); return; }
+  const W = Math.max(box.clientWidth, 720), LEFT = 92, HEAD = 46, RH = 40;
+  const span = W - LEFT - 24;
+  const X = {}; LANES.forEach((l, i) => X[l] = LEFT + span * (i + 0.5) / LANES.length);
+  const H = HEAD + rows.length * RH + 16;
+  const svg = el('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Message sequence for the selected task' });
+  const defs = el('defs');
+  for (const l of LANES) {
+    const m = el('marker', { id: 'a-' + l, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' });
+    m.append(el('path', { d: 'M0,0 L10,5 L0,10 z', fill: cssVar(l) }));
+    defs.append(m);
+  }
+  svg.append(defs);
+  for (const l of LANES) {
+    svg.append(el('text', { x: X[l], y: 22, 'text-anchor': 'middle', class: 'lane-title', style: 'fill:' + cssVar(l) }, TITLE[l]));
+    svg.append(el('line', { x1: X[l], y1: 32, x2: X[l], y2: H - 8, stroke: cssVar('line'), 'stroke-dasharray': '4 4' }));
+  }
+  let prev = null;
+  rows.forEach((r, i) => {
+    const y = HEAD + i * RH + RH / 2;
+    const g = el('g', { class: 'row' + (selectedRow === i ? ' sel' : '') });
+    g.append(el('rect', { class: 'hit', x: 0, y: y - RH / 2, width: W, height: RH, fill: 'transparent' }));
+    const t = new Date(r.ts);
+    g.append(el('text', { x: 8, y: y - 2 }, t.toLocaleTimeString([], { hour12: false })));
+    g.append(el('text', { x: 8, y: y + 11, class: 'muted' }, prev ? '+' + ((t - prev) / 1000).toFixed(1) + 's' : 'start'));
+    prev = t;
+    if (r.from) {
+      const x1 = X[r.from], x2 = X[r.to], dir = x2 > x1 ? -7 : 7;
+      g.append(el('line', { x1, y1: y, x2: x2 + dir, y2: y, stroke: cssVar(r.from), 'stroke-width': 2, 'marker-end': `url(#a-${r.from})` }));
+      g.append(el('text', { x: (x1 + x2) / 2, y: y - 6, 'text-anchor': 'middle', style: 'fill:' + (r.tone ? cssVar(r.tone) : cssVar('text')) }, r.label));
+    } else {
+      const x = X[r.lane], col = r.tone ? cssVar(r.tone) : cssVar(r.lane), left = r.lane === 'tester';
+      g.append(el('circle', { cx: x, cy: y, r: 6, fill: col }));
+      g.append(el('text', { x: x + (left ? -12 : 12), y: y + 4, 'text-anchor': left ? 'end' : 'start', style: r.tone ? 'fill:' + col : '' }, r.label));
+    }
+    g.addEventListener('click', () => {
+      selectedRow = i;
+      const d = document.getElementById('detail');
+      d.hidden = false; d.textContent = JSON.stringify(r.raw, null, 2);
+      box.querySelectorAll('g.row.sel').forEach(n => n.classList.remove('sel'));
+      g.classList.add('sel');
+    });
+    svg.append(g);
+  });
+  box.append(svg);
+}
+
+
+/* ---------- wiring ---------- */
+function render() {
+  renderTasks();
+  const rows = selectedTask ? rowsFor(selectedTask) : [];
+  renderHead(selectedTask, rows);
+  const has = !!selectedTask;
+  $('view-ticket').hidden = has;
+  document.querySelector('.seg').hidden = !has;
+  $('view-agents').hidden = !has || tab !== 'agents';
+  $('view-lineage').hidden = !has || tab !== 'lineage';
+  if (!has) { renderTicketCard(); return; }
+  if (tab === 'agents') renderAgents(); else renderDiagram(rows);
+}
+function selectTicket(id) { selectedTicket = id; selectedTask = null; selectedRow = null; live = true; stopPlay(); lastKey = ''; poll(); }
+function selectRun(taskId) { selectedTask = taskId; selectedRow = null; live = true; stopPlay(); lastKey = ''; poll(); }
+function setTab(t) {
+  tab = t;
+  for (const n of ['agents', 'lineage']) {
+    const on = n === t;
+    $('tab-' + n).classList.toggle('on', on);
+    $('tab-' + n).setAttribute('aria-selected', String(on));
+  }
+  render();
+}
+function stopPlay() { if (timer) { clearInterval(timer); timer = null; } const b = $('b-play'); b.classList.remove('on'); b.textContent = '▶ Replay'; }
+function lastIndex() { return selectedTask ? rowsFor(selectedTask).length - 1 : 0; }
+function go(delta, anim) { live = false; step = Math.max(0, Math.min(step + delta, lastIndex())); animateNext = anim; if (step === lastIndex()) live = true; renderAgents(); }
+
+async function runTicket() {
+  const tk = currentTicket(), btn = $('b-run'), note = $('runnote');
+  if (!tk) return;
+  btn.disabled = true; note.textContent = 'queuing...';
+  try {
+    const r = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket_id: tk.id }) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    note.textContent = 'queued, the Orchestrator picks it up within a few seconds';
+  } catch (e) { note.textContent = 'could not queue the run (' + e.message + ')'; }
+  setTimeout(() => { btn.disabled = false; }, 3000);
+}
+
+$('tab-agents').onclick = () => setTab('agents');
+$('tab-lineage').onclick = () => setTab('lineage');
+$('b-run').onclick = runTicket;
+$('b-prev').onclick = () => { stopPlay(); go(-1, false); };
+$('b-next').onclick = () => { stopPlay(); go(1, true); };
+$('b-live').onclick = () => { stopPlay(); live = true; animateNext = false; renderAgents(); };
+$('b-play').onclick = () => {
+  if (timer) { stopPlay(); return; }
+  live = false; step = 0; renderAgents();
+  const b = $('b-play'); b.classList.add('on'); b.textContent = '❚❚ Pause';
+  timer = setInterval(() => { if (step >= lastIndex()) { stopPlay(); live = true; return; } go(1, true); }, 1300);
+};
+document.addEventListener('keydown', e => {
+  if (tab !== 'agents' || /input|textarea/i.test((e.target && e.target.tagName) || '')) return;
+  if (e.key === 'ArrowLeft') { stopPlay(); go(-1, false); } else if (e.key === 'ArrowRight') { stopPlay(); go(1, true); }
+});
+$('showProgress').addEventListener('change', () => { lastKey = ''; render(); });
+window.addEventListener('resize', () => { if (tab === 'lineage') render(); });
+
+async function poll() {
+  const dot = $('dot'), st = $('status');
+  try {
+    const [er, tr] = await Promise.all([fetch('/api/events', { cache: 'no-store' }), fetch('/api/tickets', { cache: 'no-store' })]);
+    DATA = await er.json(); TICKETS = await tr.json();
+    dot.className = 'dot on'; st.textContent = 'live';
+    if (!selectedTicket || !currentTicket()) selectedTicket = TICKETS[0] ? TICKETS[0].id : null;
+    const tk = currentTicket(), runIds = tk ? tk.runs.map(r => r.task_id) : [];
+    // a run started from the dashboard or from chat appears: follow it
+    if (tk && runCount[tk.id] !== undefined && runIds.length > runCount[tk.id]) { selectedTask = runIds[0]; live = true; $('runnote').textContent = ''; }
+    for (const t of TICKETS) runCount[t.id] = t.runs.length;
+    if (!selectedTask || !runIds.includes(selectedTask)) selectedTask = runIds[0] || null;
+    TASK = null;
+    if (selectedTask) { try { const t = await fetch('/api/task/' + selectedTask, { cache: 'no-store' }); TASK = t.ok ? await t.json() : null; } catch (e) { TASK = null; } }
+    const key = DATA.events.length + ':' + selectedTicket + ':' + selectedTask + ':' + (TASK ? TASK.submissions.length : -1) + ':' + runIds.length;
+    if (key !== lastKey) { lastKey = key; animateNext = live; render(); }
+  } catch (e) {
+    dot.className = 'dot off'; st.textContent = 'server unreachable';
+  }
+}
+poll(); setInterval(poll, 2000);
+</script>
+</body>
+</html>

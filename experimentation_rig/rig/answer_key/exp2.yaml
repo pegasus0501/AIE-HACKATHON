@@ -1,0 +1,102 @@
+ticket: exp2
+title: best customers per region, flag slipping
+landmines:
+  - id: L2-01
+    tier: T3
+    description: Join fan-out through order_items and payments inflates totals when an order has more than one payment row.
+    tables: [orders, payments]
+    probe_sql: "SELECT COUNT(*) FROM (SELECT order_id FROM payments GROUP BY order_id HAVING COUNT(*) > 1)"
+    expected_probe_result: 4112
+    exposed_by: [net_matches_captured_minus_refunds]
+    mutant: mutants/exp2/L2-01
+  - id: L2-02
+    tier: T3
+    description: About 2% of refunds reference orders as 'ORD-<id>', so a plain join silently misses them; some reference missing orders.
+    tables: [refunds, orders]
+    probe_sql: "SELECT COUNT(*) FROM refunds WHERE order_id GLOB 'ORD-*' OR CAST(order_id AS INTEGER) NOT IN (SELECT order_id FROM orders)"
+    expected_probe_result: 68
+    exposed_by: [net_matches_captured_minus_refunds]
+    mutant: mutants/exp2/L2-02
+  - id: L2-03
+    tier: T2
+    description: Customers with NULL region_id must be reported as 'Unassigned', not dropped.
+    tables: [customers]
+    probe_sql: "SELECT COUNT(*) FROM customers WHERE region_id IS NULL"
+    expected_probe_result: 28
+    exposed_by: [unassigned_present]
+    mutant: mutants/exp2/L2-03
+  - id: L2-04
+    tier: T4
+    description: Exact ties at rank 3 in a few regions; tied customers must share the rank and all be included.
+    tables: [orders, payments, refunds]
+    probe_sql: "SELECT COUNT(*) FROM (SELECT region, net_cents FROM truth_exp2_rows WHERE rank = 3 GROUP BY region, net_cents HAVING COUNT(*) > 1)"
+    expected_probe_result: 2
+    db: truth
+    exposed_by: [ties_share_rank]
+    mutant: mutants/exp2/L2-04
+  - id: L2-05
+    tier: T3
+    description: One source stores dates DD/MM/YYYY, others MM/DD/YYYY; both valid when day <= 12, so naive parsing silently misassigns the window (cross-check against payments.paid_at).
+    tables: [orders, payments]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE order_date LIKE '__/__/____' AND source_system = 'eu_legacy'"
+    expected_probe_result: 90
+    exposed_by: [window_matches_payment_dates]
+    mutant: mutants/exp2/L2-05
+  - id: L2-06
+    tier: T2
+    description: date()/strftime() cannot parse these non-ISO dates and return NULL, so rows silently fall out of the window.
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE order_date LIKE '__/__/____' AND source_system != 'eu_legacy'"
+    expected_probe_result: 40
+    exposed_by: [no_date_rows_dropped]
+    mutant: mutants/exp2/L2-06
+  - id: L2-07
+    tier: T2
+    description: Status variants 'Cancelled', 'CANCELED', 'canceled' must all be excluded.
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE status IN ('Cancelled', 'CANCELED', 'canceled')"
+    expected_probe_result: 12
+    exposed_by: [cancelled_variants_excluded]
+    mutant: mutants/exp2/L2-07
+  - id: L2-08
+    tier: T3
+    description: Duplicate customer records split revenue and change rankings unless combined under one person.
+    tables: [customers]
+    probe_sql: "SELECT COUNT(*) FROM truth_exp2_cast WHERE role LIKE 'NA4%'"
+    expected_probe_result: 2
+    db: truth
+    exposed_by: [duplicates_combined]
+    mutant: mutants/exp2/L2-08
+  - id: L2-09
+    tier: T4
+    description: Prior-period spend of zero must give a defined result (no division by zero, no integer truncation).
+    tables: [orders, payments]
+    probe_sql: "SELECT COUNT(*) FROM truth_exp2_rows WHERE prior_cents = 0"
+    expected_probe_result: 3
+    db: truth
+    exposed_by: [pct_change_is_float, zero_prior_defined]
+    mutant: mutants/exp2/L2-09
+  - id: L2-10
+    tier: T3
+    description: Customers with refunds only (no captured payment) have negative net revenue and must still appear.
+    tables: [orders, payments, refunds]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE order_id IN (SELECT order_id FROM refunds) AND order_id NOT IN (SELECT order_id FROM payments WHERE status = 'captured')"
+    expected_probe_result: 2
+    exposed_by: [negative_net_present]
+    mutant: mutants/exp2/L2-10
+  - id: L2-11
+    tier: T4
+    description: An order exactly on the 90-day prior/current boundary must land in exactly one window.
+    tables: [orders]
+    probe_sql: "SELECT COUNT(*) FROM orders WHERE order_date = '2025-04-01'"
+    expected_probe_result: 49
+    exposed_by: [boundary_day_in_one_window]
+    mutant: mutants/exp2/L2-11
+  - id: L2-12
+    tier: T2
+    description: Regions roll up to their top-level parent for reporting.
+    tables: [regions]
+    probe_sql: "SELECT COUNT(*) FROM regions WHERE parent_id IS NOT NULL"
+    expected_probe_result: 29
+    exposed_by: [region_rolled_up]
+    mutant: mutants/exp2/L2-12

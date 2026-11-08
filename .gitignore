@@ -18,3 +18,8 @@ build/
 # Editor
 .vscode/
 .idea/
+
+# second-opinion runtime output
+workspace/
+events.jsonl
+queue/
