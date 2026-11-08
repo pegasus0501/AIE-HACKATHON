@@ -1,23 +1,25 @@
-# Second Opinion: two independent AI engineers, one verdict
+# Second Opinion
 
-Give me a small coding task in plain English. I hand the same task to two separate agents who never see each other's work:
+I run two independent AI agents on a ticket and tell you whether their work holds up.
 
-- **Engineer** writes the implementation.
-- **Tester** writes skeptical pytest tests from the task description alone.
+- The **Engineer** writes the change.
+- The **Tester** writes the tests, without seeing the Engineer's work.
+- If a ticket is vague, each of them asks me specific questions before guessing. I answer only from the approved contract.
+- Pass or fail comes from running the tests, never from an AI's opinion. I then score the run on how many planted data problems the tests caught.
 
-I run the tests and report the result. **Pass or fail comes only from pytest, never from an AI's opinion.** If the tests fail, the Engineer gets the failing test names and assertion messages (never the test code) and tries again, up to 3 rounds.
+## What to say
 
-## What to ask
-Small, self-contained Python tasks, for example:
-
-- "Add a function `add(a, b)` in `src/calc.py` that returns the sum of a and b."
-- "Write `slugify(text)` in `src/text.py` that lowercases and joins words with hyphens."
-- "Add a function that returns the n-th Fibonacci number, rejecting negative n."
+- `tickets` lists the tickets I can work on.
+- `exp1` (or `run exp2`) starts a run. You can run the same ticket as often as you like.
+- `what is exp1 about?` shows the ticket text.
+- `task: <describe a task>` starts a free-form task. Nothing else starts work.
 
 ## What you get back
-Short progress updates (engineer done, tester done, running tests, round 2...) and a final **PASS** or an honest **FAIL** with the last failing tests.
+
+Short progress updates (who asked what, tests running, retries) and a final PASS or FAIL with the score. A local dashboard shows each run step by step.
 
 ## Limits
-- One task per message; Python only.
-- Best for single functions or small modules, not whole projects.
-- Generated files are stored on the host that runs me.
+
+- A run on a ticket takes roughly 5 to 15 minutes.
+- Free-form tasks are a demo; the tickets are what I am built for.
+- Generated files stay on the machine that runs me.

@@ -31,7 +31,7 @@ from orchestrator import make_orchestrator  # noqa: E402
 from tester import make_tester  # noqa: E402
 
 if __name__ == "__main__":
-    bureau = Bureau(port=8000)
+    bureau = Bureau(port=int(os.getenv("LOCAL_PORT", "8000")))
     for make in (make_orchestrator, make_engineer, make_tester):
         bureau.add(make())
     bureau.run()
